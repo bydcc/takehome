@@ -1,0 +1,277 @@
+{
+  "name": "take-home",
+  "displayName": "赚钱离场",
+  "description": "精简版股票行情插件：搜索订阅股票、查看实时价格、支持分组",
+  "version": "0.1.3",
+  "publisher": "bydcc",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bydcc/take-home"
+  },
+  "bugs": {
+    "url": "https://github.com/bydcc/take-home/issues"
+  },
+  "homepage": "https://github.com/bydcc/take-home",
+  "keywords": [
+    "stock",
+    "watchlist",
+    "quote",
+    "股票",
+    "自选股",
+    "赚钱离场",
+    "行情"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "take-home",
+          "title": "赚钱离场",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "take-home": [
+        {
+          "id": "take-home.stocks",
+          "name": "自选股"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "take-home.addStock",
+        "title": "添加股票",
+        "icon": "$(add)"
+      },
+      {
+        "command": "take-home.removeStock",
+        "title": "移除股票",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "take-home.refresh",
+        "title": "刷新行情",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "take-home.createGroup",
+        "title": "新建分组",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "take-home.createSubGroup",
+        "title": "新建子分组",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "take-home.renameGroup",
+        "title": "重命名分组",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "take-home.deleteGroup",
+        "title": "删除分组",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "take-home.moveStock",
+        "title": "移动到分组",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "take-home.sort",
+        "title": "排序",
+        "icon": "$(sort-precedence)"
+      },
+      {
+        "command": "take-home.editNote",
+        "title": "编辑备注",
+        "icon": "$(note)"
+      },
+      {
+        "command": "take-home.toggleCollapseAll",
+        "title": "全部折叠",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "take-home.exportConfig",
+        "title": "导出配置",
+        "icon": "$(export)"
+      },
+      {
+        "command": "take-home.importConfig",
+        "title": "导入配置",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "take-home.configureStatusBar",
+        "title": "配置状态栏行情",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "take-home.showInStatusBar",
+        "title": "在状态栏显示",
+        "icon": "$(graph)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "take-home.refresh",
+          "when": "view == take-home.stocks",
+          "group": "navigation"
+        },
+        {
+          "command": "take-home.addStock",
+          "when": "view == take-home.stocks",
+          "group": "navigation",
+          "args": {
+            "useDefaultGroup": true
+          }
+        },
+        {
+          "command": "take-home.createGroup",
+          "when": "view == take-home.stocks",
+          "group": "navigation"
+        },
+        {
+          "command": "take-home.sort",
+          "when": "view == take-home.stocks",
+          "group": "navigation"
+        },
+        {
+          "command": "take-home.exportConfig",
+          "when": "view == take-home.stocks",
+          "group": "navigation@99"
+        },
+        {
+          "command": "take-home.importConfig",
+          "when": "view == take-home.stocks",
+          "group": "navigation@99"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "take-home.removeStock",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "inline"
+        },
+        {
+          "command": "take-home.moveStock",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "1_modification"
+        },
+        {
+          "command": "take-home.editNote",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "1_modification"
+        },
+        {
+          "command": "take-home.showInStatusBar",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "1_modification"
+        },
+        {
+          "command": "take-home.renameGroup",
+          "when": "view == take-home.stocks && viewItem == group",
+          "group": "1_modification"
+        },
+        {
+          "command": "take-home.deleteGroup",
+          "when": "view == take-home.stocks && viewItem == group",
+          "group": "1_modification"
+        },
+        {
+          "command": "take-home.addStock",
+          "when": "view == take-home.stocks && viewItem == group",
+          "group": "1_modification"
+        },
+        {
+          "command": "take-home.createSubGroup",
+          "when": "view == take-home.stocks && viewItem == group",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "赚钱离场",
+      "properties": {
+        "take-home.refreshInterval": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 3000,
+          "description": "行情刷新间隔（毫秒）"
+        },
+        "take-home.riseColor": {
+          "type": "string",
+          "default": "#f14c4c",
+          "description": "上涨颜色"
+        },
+        "take-home.fallColor": {
+          "type": "string",
+          "default": "#73c991",
+          "description": "下跌颜色"
+        },
+        "take-home.statusBar.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "在 VS Code 状态栏显示股价"
+        },
+        "take-home.statusBar.codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["sh000001"],
+          "description": "状态栏展示的股票代码，如 sh000001（上证指数）、sz399001（深证成指）"
+        },
+        "take-home.statusBar.colorMode": {
+          "type": "string",
+          "enum": ["color", "monochrome"],
+          "enumDescriptions": [
+            "根据涨跌显示红绿色",
+            "使用状态栏默认颜色（黑白/主题色）"
+          ],
+          "default": "color",
+          "description": "状态栏行情颜色模式"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run bundle",
+    "compile": "tsc -p ./",
+    "bundle": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18 --log-level=warning",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.3.0"
+  }
+}
