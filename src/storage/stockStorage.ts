@@ -222,6 +222,38 @@ export class StockStorage {
     return true;
   }
 
+  async setPriceAlert(
+    groupId: string,
+    code: string,
+    alertAbove?: number,
+    alertBelow?: number
+  ): Promise<boolean> {
+    const group = this.findGroup(groupId);
+    if (!group) {
+      return false;
+    }
+
+    const normalized = migrateStockCode(code);
+    const stock = group.stocks.find((s) => migrateStockCode(s.code) === normalized);
+    if (!stock) {
+      return false;
+    }
+
+    if (alertAbove !== undefined) {
+      stock.alertAbove = alertAbove;
+    } else {
+      delete stock.alertAbove;
+    }
+    if (alertBelow !== undefined) {
+      stock.alertBelow = alertBelow;
+    } else {
+      delete stock.alertBelow;
+    }
+
+    await this.save();
+    return true;
+  }
+
   async setStockNote(groupId: string, code: string, note: string): Promise<boolean> {
     const group = this.findGroup(groupId);
     if (!group) {
@@ -466,6 +498,12 @@ export class StockStorage {
         }
         if (s.note !== undefined && typeof s.note !== 'string') {
           throw new Error(`分组「${g.name}」中股票「${s.code}」备注格式无效`);
+        }
+        if (s.alertAbove !== undefined && typeof s.alertAbove !== 'number') {
+          throw new Error(`分组「${g.name}」中股票「${s.code}」价格提醒格式无效`);
+        }
+        if (s.alertBelow !== undefined && typeof s.alertBelow !== 'number') {
+          throw new Error(`分组「${g.name}」中股票「${s.code}」价格提醒格式无效`);
         }
       }
     }

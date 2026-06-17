@@ -2,18 +2,18 @@
   "name": "take-home",
   "displayName": "赚钱离场",
   "description": "精简版股票行情插件：搜索订阅股票、查看实时价格、支持分组",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "publisher": "bydcc",
   "license": "MIT",
   "icon": "resources/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bydcc/take-home"
+    "url": "https://github.com/bydcc/takehome"
   },
   "bugs": {
-    "url": "https://github.com/bydcc/take-home/issues"
+    "url": "https://github.com/bydcc/takehome/issues"
   },
-  "homepage": "https://github.com/bydcc/take-home",
+  "homepage": "https://github.com/bydcc/takehome",
   "keywords": [
     "stock",
     "watchlist",
@@ -130,9 +130,29 @@
         "icon": "$(graph)"
       },
       {
+        "command": "take-home.configureMarketOverview",
+        "title": "配置市场概览",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "take-home.showInStatusBar",
         "title": "在状态栏显示",
         "icon": "$(graph)"
+      },
+      {
+        "command": "take-home.viewStockDetail",
+        "title": "查看详情",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "take-home.openInBrowser",
+        "title": "在浏览器中打开",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "take-home.setPriceAlert",
+        "title": "设置价格提醒",
+        "icon": "$(bell)"
       }
     ],
     "menus": {
@@ -193,6 +213,21 @@
           "group": "1_modification"
         },
         {
+          "command": "take-home.viewStockDetail",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "0_view"
+        },
+        {
+          "command": "take-home.openInBrowser",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "0_view"
+        },
+        {
+          "command": "take-home.setPriceAlert",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "1_modification"
+        },
+        {
           "command": "take-home.renameGroup",
           "when": "view == take-home.stocks && viewItem == group",
           "group": "1_modification"
@@ -243,18 +278,50 @@
           "items": {
             "type": "string"
           },
-          "default": ["sh000001"],
+          "default": [
+            "sh000001"
+          ],
           "description": "状态栏展示的股票代码，如 sh000001（上证指数）、sz399001（深证成指）"
         },
         "take-home.statusBar.colorMode": {
           "type": "string",
-          "enum": ["color", "monochrome"],
+          "enum": [
+            "color",
+            "monochrome"
+          ],
           "enumDescriptions": [
             "根据涨跌显示红绿色",
             "使用状态栏默认颜色（黑白/主题色）"
           ],
           "default": "color",
           "description": "状态栏行情颜色模式"
+        },
+        "take-home.marketOverview.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "在状态栏显示 A 股市场概览（涨跌家数、两市成交额）"
+        },
+        "take-home.offHoursRefresh.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "当自选股涉及的所有市场均休市时自动降低刷新频率，减少无效请求"
+        },
+        "take-home.offHoursRefresh.interval": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 30000,
+          "description": "全部市场休市时的刷新间隔（毫秒），默认 60 秒；任一市场开盘时仍按 refreshInterval 高频刷新"
+        },
+        "take-home.tooltip.maEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "悬停自选股时在 tooltip 显示 MA5/MA10/MA20（仅悬停时按需拉取，不后台轮询）"
+        },
+        "take-home.tooltip.maFetchInterval": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 10000,
+          "description": "（已弃用）MA 改为悬停时按需拉取，此设置不再生效"
         }
       }
     }

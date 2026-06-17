@@ -1,40 +1,17 @@
-import { SearchResult, StockQuote } from '../models/types';
+import { MarketOverview, SearchResult, StockQuote } from '../models/types';
+import { httpGet } from './httpClient';
+import {
+  isSinaGlobalCode,
+  mapSearchToSinaCode,
+  normalizeInstrumentCode,
+  resolveSinaCode,
+  searchLocalInstruments,
+  toSinaQuoteCode,
+} from './instruments';
 
 const SEARCH_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/smartbox/search/get';
 const SINA_URL = 'https://hq.sinajs.cn/list=';
 const TENCENT_URL = 'https://qt.gtimg.cn/q=';
-const TIMEOUT_MS = 8000;
-
-async function httpGet(
-  url: string,
-  options?: {
-    params?: Record<string, string>;
-    headers?: Record<string, string>;
-    encoding?: 'utf8' | 'gb18030' | 'gbk';
-  }
-): Promise<string> {
-  const target = new URL(url);
-  if (options?.params) {
-    for (const [key, value] of Object.entries(options.params)) {
-      target.searchParams.set(key, value);
-    }
-  }
-
-  const resp = await fetch(target.toString(), {
-    headers: options?.headers,
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status}`);
-  }
-
-  const buffer = Buffer.from(await resp.arrayBuffer());
-  if (options?.encoding === 'gb18030' || options?.encoding === 'gbk') {
-    return new TextDecoder(options.encoding).decode(buffer);
-  }
-  return buffer.toString('utf8');
-}
 
 function normalizeCode(code: string): string {
   return code.toLowerCase();
@@ -67,6 +44,30 @@ export function getMarketLabel(code: string): string {
     }
     return '深';
   }
+  if (c.startsWith('b_') || c.startsWith('int_')) {
+    return '指';
+  }
+  if (c.startsWith('hf_')) {
+    if (/oil|_cl/.test(c)) {
+      return '油';
+    }
+    if (/xau|_gc/.test(c)) {
+      return '金';
+    }
+    if (/xag|_si/.test(c)) {
+      return '银';
+    }
+    return '期';
+  }
+  if (c.startsWith('nf_')) {
+    if (/au/.test(c)) {
+      return '金';
+    }
+    if (/ag/.test(c)) {
+      return '银';
+    }
+    return '期';
+  }
 
   return '';
 }
@@ -97,9 +98,23 @@ export function formatStockCode(market: string, rawCode: string): string {
       return `${m}${code}`;
     case 'us':
       return `usr_${code.split('.')[0]}`;
+    case 'fu':
+    case 'ft': {
+      const mapped = mapSearchToSinaCode(m, rawCode);
+      if (mapped) {
+        return mapped;
+      }
+      break;
+    }
     default:
-      return `${m}${code}`;
+      break;
   }
+
+  if (isSinaGlobalCode(code)) {
+    return code;
+  }
+
+  return `${m}${code}`;
 }
 
 function isHKCode(code: string): boolean {
@@ -110,20 +125,51 @@ function isUSCode(code: string): boolean {
   return code.startsWith('usr_');
 }
 
+function isAShareCode(code: string): boolean {
+  return /^(sh|sz|bj)/.test(normalizeCode(code));
+}
+
+/** 非交易时段现价可能为 0，用买一价或昨收兜底，避免列表空白 */
+function resolveASharePrice(price: number, bid1: number, yestclose: number): number {
+  if (price > 0) {
+    return price;
+  }
+  if (bid1 > 0) {
+    return bid1;
+  }
+  return yestclose;
+}
+
 export async function searchStocks(keyword: string): Promise<SearchResult[]> {
-  if (!keyword.trim()) {
+  const trimmed = keyword.trim();
+  if (!trimmed) {
     return [];
   }
 
-  const body = await httpGet(SEARCH_URL, { params: { q: keyword } });
+  const localResults = searchLocalInstruments(trimmed);
+
+  const body = await httpGet(SEARCH_URL, { params: { q: trimmed } });
   const data = JSON.parse(body) as { data?: { stock?: string[][] } };
   const stockList = data.data?.stock ?? [];
 
-  return stockList.map((item) => ({
+  const remoteResults = stockList.map((item) => ({
     market: item[0],
-    code: formatStockCode(item[0], item[1]),
+    code: resolveSinaCode(formatStockCode(item[0], item[1])),
     name: item[2],
   }));
+
+  const seen = new Set<string>();
+  const merged: SearchResult[] = [];
+  for (const item of [...localResults, ...remoteResults]) {
+    const code = resolveSinaCode(item.code);
+    if (seen.has(code)) {
+      continue;
+    }
+    seen.add(code);
+    merged.push({ ...item, code });
+  }
+
+  return merged;
 }
 
 export async function fetchQuotes(codes: string[]): Promise<StockQuote[]> {
@@ -132,19 +178,70 @@ export async function fetchQuotes(codes: string[]): Promise<StockQuote[]> {
   }
 
   const hkCodes = codes.filter(isHKCode);
-  const otherCodes = codes.filter((c) => !isHKCode(c));
+  const aShareCodes = codes.filter((c) => !isHKCode(c) && isAShareCode(c));
+  const sinaCodes = codes.filter((c) => !isHKCode(c) && !isAShareCode(c));
 
-  const [hkQuotes, otherQuotes] = await Promise.all([
+  const [hkQuotes, aShareQuotes, sinaQuotes] = await Promise.all([
     fetchHKQuotes(hkCodes),
-    fetchSinaQuotes(otherCodes),
+    fetchAShareQuotes(aShareCodes),
+    fetchSinaQuotesSafe(sinaCodes),
   ]);
 
   const quoteMap = new Map<string, StockQuote>();
-  for (const q of [...hkQuotes, ...otherQuotes]) {
-    quoteMap.set(q.code, q);
+  for (const q of [...hkQuotes, ...aShareQuotes, ...sinaQuotes]) {
+    quoteMap.set(normalizeInstrumentCode(q.code), q);
   }
 
-  return codes.map((code) => quoteMap.get(normalizeCode(code))).filter((q): q is StockQuote => !!q);
+  return codes.map((code) => quoteMap.get(normalizeInstrumentCode(code))).filter((q): q is StockQuote => !!q);
+}
+
+/** 新浪环球指数 / 期货 / 贵金属等非 A 股、非港股代码 */
+export function isGlobalInstrumentCode(code: string): boolean {
+  const c = normalizeCode(code);
+  return !isHKCode(c) && !isAShareCode(c);
+}
+
+/** 仅拉取环球品种（日经、KOSPI、原油、贵金属等），请求体小、响应快 */
+export async function fetchGlobalInstrumentQuotes(codes: string[]): Promise<StockQuote[]> {
+  const globalCodes = codes.filter(isGlobalInstrumentCode);
+  return fetchSinaQuotesSafe(globalCodes);
+}
+
+/** A 股优先走腾讯（无需 Referer），新浪作兜底 */
+async function fetchAShareQuotes(codes: string[]): Promise<StockQuote[]> {
+  if (codes.length === 0) {
+    return [];
+  }
+
+  let quotes: StockQuote[] = [];
+  try {
+    quotes = await fetchTencentAShareQuotes(codes);
+  } catch {
+    quotes = [];
+  }
+
+  const got = new Set(quotes.map((q) => normalizeInstrumentCode(q.code)));
+  const missing = codes.filter((c) => !got.has(normalizeInstrumentCode(c)));
+  if (missing.length > 0) {
+    try {
+      quotes.push(...(await fetchSinaQuotes(missing)));
+    } catch {
+      // 腾讯、新浪均失败时保留已拿到的部分
+    }
+  }
+
+  return quotes;
+}
+
+async function fetchSinaQuotesSafe(codes: string[]): Promise<StockQuote[]> {
+  if (codes.length === 0) {
+    return [];
+  }
+  try {
+    return await fetchSinaQuotes(codes);
+  } catch {
+    return [];
+  }
 }
 
 async function fetchSinaQuotes(codes: string[]): Promise<StockQuote[]> {
@@ -152,13 +249,15 @@ async function fetchSinaQuotes(codes: string[]): Promise<StockQuote[]> {
     return [];
   }
 
-  const url = SINA_URL + codes.map((c) => c.replace('.', '$')).join(',');
+  const url = SINA_URL + codes.map((c) => toSinaQuoteCode(c).replace('.', '$')).join(',');
   const body = await httpGet(url, {
     headers: {
       Referer: 'https://finance.sina.com.cn/',
       'User-Agent': 'Mozilla/5.0',
     },
     encoding: 'gb18030',
+    noCache: true,
+    noCacheQueryParam: false,
   });
 
   const lines = body.split(/";\r?\n|";\s*$/);
@@ -172,16 +271,17 @@ async function fetchSinaQuotes(codes: string[]): Promise<StockQuote[]> {
     if (code.includes('$')) {
       code = code.replace('$', '.');
     }
-    code = normalizeCode(code);
+    code = normalizeInstrumentCode(code);
 
-    const params = line.split('="')[1].split(',');
-    if (params.length < 4 || !params[0]) {
+    const eqMark = '="';
+    const params = line.split(eqMark)[1]?.split(',') ?? [];
+    if (params.length < 2) {
       continue;
     }
 
     const quote = parseSinaQuote(code, params);
     if (quote) {
-      quotes.push(quote);
+      quotes.push({ ...quote, code: normalizeInstrumentCode(quote.code) });
     }
   }
 
@@ -189,9 +289,11 @@ async function fetchSinaQuotes(codes: string[]): Promise<StockQuote[]> {
 }
 
 function parseSinaQuote(code: string, params: string[]): StockQuote | null {
-  const name = params[0];
-
   if (/^(sh|sz|bj)/.test(code)) {
+    const name = params[0];
+    if (!name) {
+      return null;
+    }
     const open = parseFloat(params[1]) || 0;
     const yestclose = parseFloat(params[2]) || 0;
     let price = parseFloat(params[3]) || 0;
@@ -211,6 +313,10 @@ function parseSinaQuote(code: string, params: string[]): StockQuote | null {
   }
 
   if (isUSCode(code)) {
+    const name = params[0];
+    if (!name) {
+      return null;
+    }
     const price = parseFloat(params[1]) || 0;
     const open = parseFloat(params[5]) || 0;
     const high = parseFloat(params[6]) || 0;
@@ -222,7 +328,121 @@ function parseSinaQuote(code: string, params: string[]): StockQuote | null {
     return { code, name, price, yestclose, open, high, low, change, percent, amount: 0 };
   }
 
+  if (code.startsWith('b_') || code.startsWith('int_')) {
+    return parseSinaGlobalIndex(code, params);
+  }
+
+  if (code.startsWith('hf_')) {
+    return parseSinaIntlFutures(code, params);
+  }
+
+  if (code.startsWith('nf_')) {
+    return parseSinaDomesticFutures(code, params);
+  }
+
   return null;
+}
+
+function parseSinaGlobalIndex(code: string, params: string[]): StockQuote | null {
+  const name = params[0];
+  const price = parseFloat(params[1]) || 0;
+  const change = parseFloat(params[2]) || 0;
+  const percent = parseFloat(params[3]) || 0;
+  if (!name || price <= 0) {
+    return null;
+  }
+
+  const yestclose = parseFloat(params[9]) || (change ? price - change : price);
+  const high = parseFloat(params[10]) || 0;
+  const low = parseFloat(params[11]) || 0;
+
+  return { code, name, price, yestclose, open: 0, high, low, change, percent, amount: 0 };
+}
+
+function parseSinaIntlFutures(code: string, params: string[]): StockQuote | null {
+  const price = parseFloat(params[0]) || parseFloat(params[2]) || 0;
+  const open = parseFloat(params[3]) || parseFloat(params[8]) || 0;
+  const high = parseFloat(params[4]) || 0;
+  const low = parseFloat(params[5]) || 0;
+  const yestclose = parseFloat(params[7]) || 0;
+  const name = params[13] || code;
+  if (price <= 0) {
+    return null;
+  }
+
+  const change = yestclose ? price - yestclose : 0;
+  const percent = yestclose ? (change / yestclose) * 100 : 0;
+
+  return { code, name, price, yestclose, open, high, low, change, percent, amount: 0 };
+}
+
+function parseSinaDomesticFutures(code: string, params: string[]): StockQuote | null {
+  const name = params[0];
+  const price = parseFloat(params[2]) || parseFloat(params[8]) || 0;
+  const high = parseFloat(params[3]) || 0;
+  const low = parseFloat(params[4]) || 0;
+  const yestclose = parseFloat(params[10]) || 0;
+  const open = parseFloat(params[6]) || 0;
+  const amount = parseFloat(params[13]) || 0;
+  if (!name || price <= 0) {
+    return null;
+  }
+
+  const change = yestclose ? price - yestclose : 0;
+  const percent = yestclose ? (change / yestclose) * 100 : 0;
+
+  return { code, name, price, yestclose, open, high, low, change, percent, amount };
+}
+
+async function fetchTencentAShareQuotes(codes: string[]): Promise<StockQuote[]> {
+  if (codes.length === 0) {
+    return [];
+  }
+
+  const body = await httpGet(TENCENT_URL, {
+    params: { q: codes.map((c) => normalizeCode(c)).join(',') },
+    encoding: 'gbk',
+    noCache: true,
+  });
+
+  const quotes: StockQuote[] = [];
+  for (const line of body.split(/;\r?\n|;\s*$/)) {
+    if (!line.includes('="') || line.includes('pv_none_match')) {
+      continue;
+    }
+
+    const code = normalizeInstrumentCode(line.split('="')[0].replace(/^v_/, ''));
+    const fields = line.split('="')[1]?.replace(/";?$/, '').split('~') ?? [];
+    if (fields.length < 35) {
+      continue;
+    }
+
+    const name = fields[1] || code;
+    const rawPrice = parseFloat(fields[3]) || 0;
+    const yestclose = parseFloat(fields[4]) || 0;
+    const open = parseFloat(fields[5]) || 0;
+    const high = parseFloat(fields[33]) || 0;
+    const low = parseFloat(fields[34]) || 0;
+    const bid1 = parseFloat(fields[9]) || 0;
+    const price = resolveASharePrice(rawPrice, bid1, yestclose);
+    if (price <= 0) {
+      continue;
+    }
+
+    const change =
+      rawPrice > 0
+        ? parseFloat(fields[31]) || price - yestclose
+        : 0;
+    const percent =
+      rawPrice > 0
+        ? parseFloat(fields[32]) || (yestclose ? ((price - yestclose) / yestclose) * 100 : 0)
+        : 0;
+    const amount = (parseFloat(fields[37]) || 0) * 10000;
+
+    quotes.push({ code, name, price, yestclose, open, high, low, change, percent, amount });
+  }
+
+  return quotes;
 }
 
 async function fetchHKQuotes(codes: string[]): Promise<StockQuote[]> {
@@ -236,6 +456,7 @@ async function fetchHKQuotes(codes: string[]): Promise<StockQuote[]> {
       fmt: 'json',
     },
     encoding: 'gbk',
+    noCache: true,
   });
   const payload = JSON.parse(body) as Record<string, string[]>;
 
@@ -257,13 +478,15 @@ async function fetchHKQuotes(codes: string[]): Promise<StockQuote[]> {
       };
     }
 
-    const price = parseFloat(data[3]) || 0;
+    const rawPrice = parseFloat(data[3]) || 0;
     const yestclose = parseFloat(data[4]) || 0;
     const open = parseFloat(data[5]) || 0;
     const high = parseFloat(data[33]) || 0;
     const low = parseFloat(data[34]) || 0;
-    const change = price - yestclose;
-    const percent = yestclose ? (change / yestclose) * 100 : 0;
+    const bid1 = parseFloat(data[9]) || 0;
+    const price = resolveASharePrice(rawPrice, bid1, yestclose);
+    const change = rawPrice > 0 ? price - yestclose : 0;
+    const percent = rawPrice > 0 && yestclose ? (change / yestclose) * 100 : 0;
     const amount = parseFloat(data[37]) || 0;
 
     return {
@@ -282,8 +505,17 @@ async function fetchHKQuotes(codes: string[]): Promise<StockQuote[]> {
 }
 
 export function formatPrice(price: number, code: string): string {
-  const decimals = isUSCode(code) ? 3 : 2;
-  return price.toFixed(decimals);
+  const c = code.toLowerCase();
+  if (isUSCode(c)) {
+    return price.toFixed(3);
+  }
+  if (c.startsWith('hf_si') || c.startsWith('hf_xag')) {
+    return price.toFixed(3);
+  }
+  if (c.startsWith('nf_ag')) {
+    return price.toFixed(0);
+  }
+  return price.toFixed(2);
 }
 
 export function formatPercent(percent: number): string {
@@ -322,4 +554,91 @@ export function formatAmount(amount: number): string {
     return `${(amount / 10000).toFixed(2)}万`;
   }
   return amount.toFixed(0);
+}
+
+/** 格式化两市总成交额（元），输出如 2.40万亿、8650.32亿 */
+export function formatMarketAmount(amount: number): string {
+  if (amount <= 0) {
+    return '--';
+  }
+  if (amount >= 1_0000_0000_0000) {
+    return `${(amount / 1_0000_0000_0000).toFixed(2)}万亿`;
+  }
+  return formatAmount(amount);
+}
+
+const MARKET_FENBU_URL = 'https://push2ex.eastmoney.com/getTopicZDFenBu';
+const MARKET_INDEX_URL = 'https://push2.eastmoney.com/api/qt/ulist.np/get';
+
+export async function fetchMarketOverview(): Promise<MarketOverview> {
+  const [fenbuBody, indexBody] = await Promise.all([
+    httpGet(MARKET_FENBU_URL, {
+      params: {
+        ut: '7eea3edcaed734bea9cbfc24409ed989',
+        dpt: 'wz.ztzt',
+      },
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    }),
+    httpGet(MARKET_INDEX_URL, {
+      params: {
+        fltt: '2',
+        secids: '1.000001,0.399001',
+        fields: 'f2,f3,f6,f12,f14',
+      },
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    }),
+  ]);
+
+  const fenbuData = JSON.parse(fenbuBody) as {
+    data?: { fenbu?: Array<Record<string, number>> };
+  };
+  let riseCount = 0;
+  let fallCount = 0;
+  let flatCount = 0;
+
+  for (const bucket of fenbuData.data?.fenbu ?? []) {
+    for (const [key, count] of Object.entries(bucket)) {
+      const change = Number(key);
+      if (change > 0) {
+        riseCount += count;
+      } else if (change < 0) {
+        fallCount += count;
+      } else {
+        flatCount = count;
+      }
+    }
+  }
+
+  const indexData = JSON.parse(indexBody) as {
+    data?: {
+      diff?: Array<{ f2: number; f3: number; f6: number; f12: string; f14: string }>;
+    };
+  };
+  const indexMap = new Map(
+    (indexData.data?.diff ?? []).map((item) => [item.f12, item])
+  );
+  const shRaw = indexMap.get('000001');
+  const szRaw = indexMap.get('399001');
+
+  const shIndex = {
+    name: shRaw?.f14 ?? '上证指数',
+    price: shRaw?.f2 ?? 0,
+    percent: shRaw?.f3 ?? 0,
+    amount: shRaw?.f6 ?? 0,
+  };
+  const szIndex = {
+    name: szRaw?.f14 ?? '深证成指',
+    price: szRaw?.f2 ?? 0,
+    percent: szRaw?.f3 ?? 0,
+    amount: szRaw?.f6 ?? 0,
+  };
+
+  return {
+    riseCount,
+    fallCount,
+    flatCount,
+    totalAmount: shIndex.amount + szIndex.amount,
+    shIndex,
+    szIndex,
+  };
 }

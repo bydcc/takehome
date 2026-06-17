@@ -2,6 +2,10 @@ export interface StockItem {
   code: string;
   name: string;
   note?: string;
+  /** 价格高于此值时提醒（复用行情刷新检测，无额外请求） */
+  alertAbove?: number;
+  /** 价格低于此值时提醒 */
+  alertBelow?: number;
 }
 
 export interface StockGroup {
@@ -38,6 +42,22 @@ export interface SearchResult {
   code: string;
   name: string;
   market: string;
+}
+
+export interface MarketIndexSnapshot {
+  name: string;
+  price: number;
+  percent: number;
+  amount: number;
+}
+
+export interface MarketOverview {
+  riseCount: number;
+  fallCount: number;
+  flatCount: number;
+  totalAmount: number;
+  shIndex: MarketIndexSnapshot;
+  szIndex: MarketIndexSnapshot;
 }
 
 export type SortOrder = 'none' | 'asc' | 'desc';

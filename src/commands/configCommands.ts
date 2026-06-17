@@ -1,5 +1,7 @@
 import { commands, Disposable, Uri, window, workspace } from 'vscode';
 import { StockTreeProvider } from '../provider/stockTreeProvider';
+import { QuoteScheduler } from '../service/quoteScheduler';
+import { MaCacheService } from '../service/maCacheService';
 import { StockStorage } from '../storage/stockStorage';
 
 function formatExportFilename(): string {
@@ -17,7 +19,9 @@ function getDefaultExportUri(): Uri {
 
 export function registerConfigCommands(
   storage: StockStorage,
-  treeProvider: StockTreeProvider
+  treeProvider: StockTreeProvider,
+  quoteScheduler: QuoteScheduler,
+  maCacheService: MaCacheService
 ): Disposable[] {
   return [
     commands.registerCommand('take-home.exportConfig', async () => {
@@ -76,7 +80,8 @@ export function registerConfigCommands(
 
         await storage.replaceConfig(config);
         treeProvider.refresh();
-        void treeProvider.refreshQuotes();
+        maCacheService.syncCodes(storage.getAllCodes());
+        void quoteScheduler.refresh();
         void window.showInformationMessage(`已导入 ${groupCount} 个分组、${stockCount} 只股票`);
       } catch (e) {
         void window.showErrorMessage(e instanceof Error ? e.message : '导入失败');

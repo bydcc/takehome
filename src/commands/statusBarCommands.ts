@@ -2,6 +2,7 @@ import { commands, ConfigurationTarget, Disposable, QuickPickItem, window, works
 import { showStockSearchPicker } from './addStockPicker';
 import { StockTreeItem } from '../provider/stockTreeProvider';
 import { StatusBarProvider } from '../ui/statusBarProvider';
+import { QuoteScheduler } from '../service/quoteScheduler';
 import { StockStorage } from '../storage/stockStorage';
 
 const MAX_STATUS_BAR_CODES = 5;
@@ -42,7 +43,8 @@ async function addStatusBarCode(code: string): Promise<void> {
 
 export function registerStatusBarCommands(
   statusBarProvider: StatusBarProvider,
-  storage: StockStorage
+  storage: StockStorage,
+  quoteScheduler: QuoteScheduler
 ): Disposable[] {
   return [
     commands.registerCommand('take-home.configureStatusBar', async () => {
@@ -88,7 +90,7 @@ export function registerStatusBarCommands(
             return;
           }
           await addStatusBarCode(selected.code);
-          void statusBarProvider.refreshQuotes();
+          void quoteScheduler.refresh();
           void window.showInformationMessage(`状态栏已添加 ${selected.name}`);
           break;
         }
@@ -116,7 +118,7 @@ export function registerStatusBarCommands(
             return;
           }
           await addStatusBarCode(selected.code);
-          void statusBarProvider.refreshQuotes();
+          void quoteScheduler.refresh();
           void window.showInformationMessage(`状态栏已添加 ${selected.label}`);
           break;
         }
@@ -124,6 +126,7 @@ export function registerStatusBarCommands(
           const next: StatusBarColorMode = colorMode === 'color' ? 'monochrome' : 'color';
           await updateStatusBarConfig({ colorMode: next });
           statusBarProvider.startAutoRefresh();
+          void quoteScheduler.refresh();
           void window.showInformationMessage(
             next === 'color' ? '状态栏已切换为彩色显示' : '状态栏已切换为黑白显示'
           );
@@ -132,10 +135,12 @@ export function registerStatusBarCommands(
         case 'toggle':
           await updateStatusBarConfig({ enabled: !enabled });
           statusBarProvider.startAutoRefresh();
+          void quoteScheduler.refresh();
           break;
         case 'clear':
           await updateStatusBarConfig({ codes: [] });
           statusBarProvider.startAutoRefresh();
+          void quoteScheduler.refresh();
           void window.showInformationMessage('已清除状态栏行情');
           break;
       }
@@ -149,6 +154,7 @@ export function registerStatusBarCommands(
       const { code, name } = item.context.stock;
       await addStatusBarCode(code);
       statusBarProvider.startAutoRefresh();
+      void quoteScheduler.refresh();
       void window.showInformationMessage(`状态栏已显示 ${name}`);
     }),
   ];

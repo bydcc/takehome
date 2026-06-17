@@ -10,7 +10,7 @@ const DEBOUNCE_MS = 300;
 
 export async function showStockSearchPicker(): Promise<SearchResult | undefined> {
   const quickPick = window.createQuickPick<StockPickItem>();
-  quickPick.placeholder = '输入股票代码或名称，实时搜索匹配';
+  quickPick.placeholder = '输入代码、名称、拼音或环球品种（如 NKY、布伦特、A50）';
   quickPick.matchOnDescription = true;
   quickPick.matchOnDetail = true;
 
@@ -41,6 +41,7 @@ export async function showStockSearchPicker(): Promise<SearchResult | undefined>
           label: r.name,
           description: r.code,
           detail: getMarketLabel(r.code) || r.market.toUpperCase(),
+          alwaysShow: true,
           stock: r,
         }));
       } catch {

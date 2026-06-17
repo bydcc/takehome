@@ -1,15 +1,23 @@
 import { commands, Disposable, QuickPickItem, window } from 'vscode';
 import { showStockSearchPicker } from './addStockPicker';
 import { StockTreeItem, StockTreeProvider } from '../provider/stockTreeProvider';
+import { MarketOverviewScheduler } from '../service/marketOverviewScheduler';
+import { MaCacheService } from '../service/maCacheService';
+import { QuoteScheduler } from '../service/quoteScheduler';
 import { SortOrder } from '../models/types';
 import { StockStorage } from '../storage/stockStorage';
 
 export function registerCommands(
   storage: StockStorage,
-  treeProvider: StockTreeProvider
+  treeProvider: StockTreeProvider,
+  quoteScheduler: QuoteScheduler,
+  marketOverviewScheduler: MarketOverviewScheduler,
+  maCacheService: MaCacheService
 ): Disposable[] {
   return [
-    commands.registerCommand('take-home.refresh', () => treeProvider.refreshQuotes()),
+    commands.registerCommand('take-home.refresh', async () => {
+      await Promise.all([quoteScheduler.refresh(), marketOverviewScheduler.refresh()]);
+    }),
 
     commands.registerCommand('take-home.toggleCollapseAll', () => {
       void commands.executeCommand('workbench.actions.treeView.take-home.stocks.collapseAll');
@@ -51,7 +59,8 @@ export function registerCommands(
       }
 
       treeProvider.refresh();
-      void treeProvider.fetchQuotesForCodes([selected.code]);
+      maCacheService.prioritize(selected.code);
+      void quoteScheduler.refresh();
       void window.showInformationMessage(`已添加 ${selected.name}`);
     }),
 

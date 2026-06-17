@@ -5,8 +5,9 @@ import {
   window,
   workspace,
 } from 'vscode';
-import { fetchQuotes, formatPercent, formatPrice, formatStockLabel } from '../api/stockApi';
+import { formatPercent, formatPrice, formatStockLabel } from '../api/stockApi';
 import { StockQuote } from '../models/types';
+import { QuoteScheduler } from '../service/quoteScheduler';
 
 function normalizeCode(code: string): string {
   return code.toLowerCase();
@@ -26,17 +27,30 @@ function isStatusBarColorMode(): boolean {
 
 export class StatusBarProvider implements Disposable {
   private item: StatusBarItem;
-  private refreshTimer: ReturnType<typeof setInterval> | undefined;
   private quotes: StockQuote[] = [];
+  private disposables: Disposable[] = [];
 
-  constructor() {
+  constructor(quoteScheduler: QuoteScheduler) {
     this.item = window.createStatusBarItem(StatusBarAlignment.Right, 50);
     this.item.command = 'take-home.configureStatusBar';
     this.item.tooltip = '赚钱离场 状态栏行情（点击配置）';
+
+    this.disposables.push(
+      quoteScheduler.registerCodeProvider(() => (this.isEnabled() ? this.getCodes() : [])),
+      quoteScheduler.subscribe((quoteMap) => {
+        const codes = this.getCodes();
+        this.quotes = codes
+          .map((code) => quoteMap.get(code))
+          .filter((q): q is StockQuote => !!q);
+        this.updateDisplay();
+      })
+    );
   }
 
   dispose(): void {
-    this.stopAutoRefresh();
+    for (const d of this.disposables) {
+      d.dispose();
+    }
     this.item.dispose();
   }
 
@@ -50,45 +64,11 @@ export class StatusBarProvider implements Disposable {
   }
 
   startAutoRefresh(): void {
-    this.stopAutoRefresh();
     this.updateDisplay();
-
-    if (!this.isEnabled()) {
-      return;
-    }
-
-    const interval = workspace.getConfiguration('take-home').get<number>('refreshInterval', 5000);
-    this.refreshTimer = setInterval(() => void this.refreshQuotes(), interval);
-    void this.refreshQuotes();
   }
 
   stopAutoRefresh(): void {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = undefined;
-    }
-  }
-
-  async refreshQuotes(): Promise<void> {
-    if (!this.isEnabled()) {
-      this.updateDisplay();
-      return;
-    }
-
-    const codes = this.getCodes();
-    if (codes.length === 0) {
-      this.quotes = [];
-      this.updateDisplay();
-      return;
-    }
-
-    try {
-      this.quotes = await fetchQuotes(codes);
-      this.updateDisplay();
-    } catch {
-      // 保留上次数据
-      this.updateDisplay();
-    }
+    // 刷新由 QuoteScheduler 统一管理
   }
 
   updateDisplay(): void {
