@@ -1,4 +1,5 @@
 import { ExtensionContext } from 'vscode';
+import { getEmSecidForSinaCode } from '../api/eastMoneySecId';
 import { TakeHomeExportFile, StockConfig, StockGroup, StockItem } from '../models/types';
 
 const STORAGE_KEY = 'take-home.stockConfig';
@@ -45,6 +46,12 @@ export class StockStorage {
     for (const group of this.config.groups) {
       for (const stock of group.stocks) {
         stock.code = migrateStockCode(stock.code);
+        if (!stock.secid) {
+          const secid = getEmSecidForSinaCode(stock.code);
+          if (secid) {
+            stock.secid = secid;
+          }
+        }
       }
     }
   }
@@ -200,7 +207,14 @@ export class StockStorage {
       return 'exists';
     }
 
-    group.stocks.push({ ...stock, code: normalizedCode });
+    const entry: StockItem = { ...stock, code: normalizedCode };
+    if (!entry.secid) {
+      const secid = getEmSecidForSinaCode(normalizedCode);
+      if (secid) {
+        entry.secid = secid;
+      }
+    }
+    group.stocks.push(entry);
     await this.save();
     return 'added';
   }
@@ -504,6 +518,9 @@ export class StockStorage {
         }
         if (s.alertBelow !== undefined && typeof s.alertBelow !== 'number') {
           throw new Error(`分组「${g.name}」中股票「${s.code}」价格提醒格式无效`);
+        }
+        if (s.secid !== undefined && typeof s.secid !== 'string') {
+          throw new Error(`分组「${g.name}」中股票「${s.code}」secid 格式无效`);
         }
       }
     }

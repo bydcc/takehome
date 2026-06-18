@@ -1,5 +1,6 @@
 import { httpGet, httpGetJson } from './httpClient';
-import { toEastMoneySecId, toTencentKlineCode } from './klineApi';
+import { resolveEastMoneySecId, supportsEastMoneyIntradayOnly } from './eastMoneySecId';
+import { toTencentKlineCode } from './klineApi';
 
 export interface IntradayPoint {
   time: string;
@@ -30,10 +31,13 @@ const EASTMONEY_HEADERS: Record<string, string> = {
   Accept: 'application/json, text/plain, */*',
 };
 
-/** A 股 / 港股支持分时（含竞价时段，视数据源而定） */
-export function supportsIntraday(code: string): boolean {
+/** A 股 / 港股支持分时；环球品种在有 secid 或新浪映射时走东财分时 */
+export function supportsIntraday(code: string, secid?: string): boolean {
   const c = code.toLowerCase();
-  return /^(sh|sz|bj)\d+/.test(c) || /^hk\d+/.test(c);
+  if (/^(sh|sz|bj)\d+/.test(c) || /^hk\d+/.test(c)) {
+    return true;
+  }
+  return supportsEastMoneyIntradayOnly(c, secid);
 }
 
 function isAShareAuction(time: string): boolean {
@@ -66,16 +70,21 @@ function normalizeTime(time: string): string {
   return trimmed;
 }
 
-export async function fetchIntraday(code: string): Promise<IntradayData | null> {
+export async function fetchIntraday(code: string, secid?: string): Promise<IntradayData | null> {
   const normalized = code.toLowerCase();
-  if (!supportsIntraday(normalized)) {
+  if (!supportsIntraday(normalized, secid)) {
     return null;
   }
 
   const isAshare = /^(sh|sz|bj)\d+/.test(normalized);
+  const isHk = /^hk\d+/.test(normalized);
+
+  if (!isAshare && !isHk) {
+    return fetchEastMoneyIntraday(normalized, secid);
+  }
 
   try {
-    const em = await fetchEastMoneyIntraday(normalized);
+    const em = await fetchEastMoneyIntraday(normalized, secid);
     if (em && em.points.length > 0) {
       return em;
     }
@@ -90,7 +99,7 @@ export async function fetchIntraday(code: string): Promise<IntradayData | null> 
     }
 
     if (isAshare) {
-      const auction = await fetchEastMoneyAuctionPoints(normalized, tencent.preClose);
+      const auction = await fetchEastMoneyAuctionPoints(normalized, tencent.preClose, secid);
       if (auction.length > 0) {
         tencent.points = mergeAuctionAndTrading(auction, tencent.points);
       }
@@ -104,17 +113,18 @@ export async function fetchIntraday(code: string): Promise<IntradayData | null> 
 
 async function fetchEastMoneyTrends(
   code: string,
-  iscr: boolean
+  iscr: boolean,
+  secid?: string
 ): Promise<{ preClose: number; trends: string[] } | null> {
-  const secid = toEastMoneySecId(code);
-  if (!secid) {
+  const resolvedSecid = resolveEastMoneySecId(code, secid);
+  if (!resolvedSecid) {
     return null;
   }
 
   for (const ut of EASTMONEY_UTS) {
     try {
       const target = new URL(EASTMONEY_TRENDS_URL);
-      target.searchParams.set('secid', secid);
+      target.searchParams.set('secid', resolvedSecid);
       target.searchParams.set('ut', ut);
       target.searchParams.set('fields1', 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13');
       target.searchParams.set('fields2', 'f51,f52,f53,f54,f55,f56,f57,f58');
@@ -152,10 +162,10 @@ async function fetchEastMoneyTrends(
   return null;
 }
 
-async function fetchEastMoneyIntraday(code: string): Promise<IntradayData | null> {
+async function fetchEastMoneyIntraday(code: string, secid?: string): Promise<IntradayData | null> {
   const isAshare = /^(sh|sz|bj)\d+/.test(code);
   const withPreMarket = isAshare;
-  const em = await fetchEastMoneyTrends(code, withPreMarket);
+  const em = await fetchEastMoneyTrends(code, withPreMarket, secid);
   if (!em) {
     return null;
   }
@@ -197,9 +207,10 @@ async function fetchEastMoneyIntraday(code: string): Promise<IntradayData | null
 /** 仅拉取 9:15–9:29 集合竞价，用于补齐腾讯分时 */
 async function fetchEastMoneyAuctionPoints(
   code: string,
-  preClose: number
+  preClose: number,
+  secid?: string
 ): Promise<IntradayPoint[]> {
-  const em = await fetchEastMoneyTrends(code, true);
+  const em = await fetchEastMoneyTrends(code, true, secid);
   if (!em) {
     return [];
   }

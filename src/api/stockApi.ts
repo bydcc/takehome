@@ -1,5 +1,6 @@
 import { MarketOverview, SearchResult, StockQuote } from '../models/types';
 import { httpGet } from './httpClient';
+import { searchEastMoneyInstruments } from './eastMoneySearchApi';
 import {
   isSinaGlobalCode,
   mapSearchToSinaCode,
@@ -148,28 +149,44 @@ export async function searchStocks(keyword: string): Promise<SearchResult[]> {
 
   const localResults = searchLocalInstruments(trimmed);
 
-  const body = await httpGet(SEARCH_URL, { params: { q: trimmed } });
+  const [remoteResults, emResults] = await Promise.all([
+    fetchTencentSearch(trimmed).catch(() => [] as SearchResult[]),
+    searchEastMoneyInstruments(trimmed).catch(() => [] as SearchResult[]),
+  ]);
+
+  const seen = new Set<string>();
+  const merged: SearchResult[] = [];
+
+  const push = (item: SearchResult) => {
+    const code = resolveSinaCode(item.code);
+    if (seen.has(code)) {
+      const existing = merged.find((r) => r.code === code);
+      if (existing && !existing.secid && item.secid) {
+        existing.secid = item.secid;
+      }
+      return;
+    }
+    seen.add(code);
+    merged.push({ ...item, code });
+  };
+
+  for (const item of [...localResults, ...emResults, ...remoteResults]) {
+    push(item);
+  }
+
+  return merged;
+}
+
+async function fetchTencentSearch(keyword: string): Promise<SearchResult[]> {
+  const body = await httpGet(SEARCH_URL, { params: { q: keyword } });
   const data = JSON.parse(body) as { data?: { stock?: string[][] } };
   const stockList = data.data?.stock ?? [];
 
-  const remoteResults = stockList.map((item) => ({
+  return stockList.map((item) => ({
     market: item[0],
     code: resolveSinaCode(formatStockCode(item[0], item[1])),
     name: item[2],
   }));
-
-  const seen = new Set<string>();
-  const merged: SearchResult[] = [];
-  for (const item of [...localResults, ...remoteResults]) {
-    const code = resolveSinaCode(item.code);
-    if (seen.has(code)) {
-      continue;
-    }
-    seen.add(code);
-    merged.push({ ...item, code });
-  }
-
-  return merged;
 }
 
 export async function fetchQuotes(codes: string[]): Promise<StockQuote[]> {

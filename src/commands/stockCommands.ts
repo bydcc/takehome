@@ -47,6 +47,7 @@ export function registerCommands(
       const result = await storage.addStock(groupId, {
         code: selected.code,
         name: selected.name,
+        secid: selected.secid,
       });
 
       if (result === 'exists') {

@@ -1,3 +1,4 @@
+import { getEmSecidForSinaCode } from './eastMoneySecId';
 import { SearchResult } from '../models/types';
 
 export interface SinaInstrument {
@@ -116,9 +117,13 @@ export function searchLocalInstruments(keyword: string): SearchResult[] {
   }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
-    .map(({ instrument }) => ({
-      code: normalizeInstrumentCode(instrument.code),
-      name: instrument.name,
-      market: 'sina',
-    }));
+    .map(({ instrument }) => {
+      const code = normalizeInstrumentCode(instrument.code);
+      return {
+        code,
+        name: instrument.name,
+        market: 'sina',
+        secid: getEmSecidForSinaCode(code),
+      };
+    });
 }

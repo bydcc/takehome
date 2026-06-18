@@ -65,6 +65,7 @@ export function activate(context: ExtensionContext): void {
       showCollapseAll: true,
       dragAndDropController,
     });
+    treeProvider.setViewVisible(treeView.visible);
 
     restartSchedulers(quoteScheduler, marketOverviewScheduler);
     statusBarProvider.startAutoRefresh();
@@ -74,7 +75,16 @@ export function activate(context: ExtensionContext): void {
     activationDisposables = [
       treeView,
       treeView.onDidChangeVisibility((e) => {
+        treeProvider.setViewVisible(e.visible);
         if (!e.visible) {
+          return;
+        }
+        if (quoteScheduler.collectCodes().length > 0) {
+          void quoteScheduler.refresh();
+        }
+      }),
+      window.onDidChangeWindowState((state) => {
+        if (!state.focused) {
           return;
         }
         treeProvider.refresh();

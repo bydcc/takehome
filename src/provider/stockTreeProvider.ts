@@ -43,6 +43,9 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
   private tooltipFingerprints = new Map<string, string>();
   /** 是否已收到过可展示的行情（用于首次加载后强制整树刷新） */
   private hasDisplayableQuotes = false;
+  /** 隐藏视图时暂停 TreeView 增量刷新，避免切回时行内容叠影 */
+  private viewVisible = true;
+  private pendingRefreshWhileHidden = false;
 
   constructor(
     private storage: StockStorage,
@@ -86,11 +89,27 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     this.refresh();
   }
 
-  /** 结构变化（增删分组/排序等）时全量刷新 */
+  /** 结构变化（增删分组/排序等）或需强制重绘时全量刷新 */
   refresh(): void {
     this.displayFingerprints.clear();
     this.tooltipFingerprints.clear();
+    this.itemCache.clear();
+    if (!this.viewVisible) {
+      this.pendingRefreshWhileHidden = true;
+      return;
+    }
+    this.pendingRefreshWhileHidden = false;
     this._onDidChangeTreeData.fire(undefined);
+  }
+
+  setViewVisible(visible: boolean): void {
+    if (this.viewVisible === visible) {
+      return;
+    }
+    this.viewVisible = visible;
+    if (visible) {
+      this.refresh();
+    }
   }
 
   /** MA 就绪后只刷新该股票 tooltip，不碰行内价格 */
@@ -117,21 +136,22 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
   }
 
   getTreeItem(element: StockTreeItem): TreeItem {
-    return this.buildItem(element);
+    return this.toDisplayItem(this.buildItem(element));
   }
 
   resolveTreeItem(
     item: TreeItem,
     element: StockTreeItem,
     _token: CancellationToken
-  ): ProviderResult<StockTreeItem> {
+  ): ProviderResult<TreeItem> {
     const built = this.buildItem(element);
+    const display = this.toDisplayItem(built);
     if (built.context.type === 'stock' && built.context.groupId && built.context.stock) {
       const code = normalizeCode(built.context.stock.code);
       this.maCache.ensure(code);
-      built.tooltip = this.buildStockTooltip(built.context.stock, built.context.groupId);
+      display.tooltip = this.buildStockTooltip(built.context.stock, built.context.groupId);
     }
-    return built;
+    return display;
   }
 
   getChildren(element?: StockTreeItem): StockTreeItem[] {
@@ -157,6 +177,11 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
 
   private onQuotesUpdated(quotes: ReadonlyMap<string, StockQuote>): void {
     this.quotes = new Map(quotes);
+    if (!this.viewVisible) {
+      this.pendingRefreshWhileHidden = true;
+      return;
+    }
+
     const hasDisplayable = [...quotes.values()].some((q) => q.price > 0);
     if (hasDisplayable && !this.hasDisplayableQuotes) {
       this.hasDisplayableQuotes = true;
@@ -205,6 +230,10 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
   }
 
   private fireItem(id: string, context: StockTreeContext): void {
+    if (!this.viewVisible) {
+      this.pendingRefreshWhileHidden = true;
+      return;
+    }
     const item = this.itemCache.get(id);
     if (!item) {
       this._onDidChangeTreeData.fire(undefined);
@@ -236,6 +265,18 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     const item = new StockTreeItem(label, collapsibleState, context);
     item.id = id;
     this.itemCache.set(id, item);
+    return item;
+  }
+
+  /** 每次返回新 TreeItem，避免 VS Code 增量刷新时 label/description 叠影 */
+  private toDisplayItem(source: StockTreeItem): TreeItem {
+    const item = new TreeItem(source.label ?? '', source.collapsibleState);
+    item.id = source.id;
+    item.description = source.description;
+    item.iconPath = source.iconPath;
+    item.contextValue = source.contextValue;
+    item.command = source.command;
+    item.tooltip = source.tooltip;
     return item;
   }
 

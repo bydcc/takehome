@@ -23,6 +23,7 @@ export type ChartPeriod = 'intraday' | KlinePeriod;
 interface DetailContext {
   code: string;
   name: string;
+  secid?: string;
   note?: string;
   alertAbove?: number;
   alertBelow?: number;
@@ -30,11 +31,77 @@ interface DetailContext {
 
 const INTRADAY_REFRESH_MS = 60000;
 
-function defaultChartPeriod(code: string): ChartPeriod {
-  if (supportsIntraday(code)) {
+type DefaultChartPeriodSetting = 'intraday' | 'daily' | 'weekly';
+
+function getPreferredChartPeriodSetting(): DefaultChartPeriodSetting {
+  const value = workspace
+    .getConfiguration('take-home')
+    .get<string>('detail.defaultChartPeriod', 'intraday');
+  if (value === 'daily' || value === 'weekly') {
+    return value;
+  }
+  return 'intraday';
+}
+
+/** 按用户配置解析默认图表；不支持时降级为分时 → 日 K */
+function resolveChartPeriod(
+  code: string,
+  secid: string | undefined,
+  preferred: DefaultChartPeriodSetting
+): ChartPeriod {
+  const hasIntraday = supportsIntraday(code, secid);
+  const hasKline = supportsKline(code, secid);
+
+  if (preferred === 'intraday' && hasIntraday) {
     return 'intraday';
   }
+  if (preferred === 'weekly' && hasKline) {
+    return 'weekly';
+  }
+  if (preferred === 'daily' && hasKline) {
+    return 'daily';
+  }
+
+  if (hasIntraday) {
+    return 'intraday';
+  }
+  if (hasKline) {
+    return 'daily';
+  }
   return 'daily';
+}
+
+function defaultChartPeriod(code: string, secid?: string): ChartPeriod {
+  return resolveChartPeriod(code, secid, getPreferredChartPeriodSetting());
+}
+
+function normalizeActivePeriod(
+  activePeriod: ChartPeriod,
+  hasIntraday: boolean,
+  hasKline: boolean
+): ChartPeriod {
+  if (activePeriod === 'intraday') {
+    return hasIntraday ? 'intraday' : hasKline ? 'daily' : 'daily';
+  }
+  if (activePeriod === 'weekly') {
+    return hasKline ? 'weekly' : hasIntraday ? 'intraday' : 'daily';
+  }
+  return hasKline ? 'daily' : hasIntraday ? 'intraday' : 'daily';
+}
+
+function buildDetailContext(
+  code: string,
+  name: string,
+  stockMeta?: { secid?: string; note?: string; alertAbove?: number; alertBelow?: number }
+): DetailContext {
+  return {
+    code,
+    name,
+    secid: stockMeta?.secid,
+    note: stockMeta?.note,
+    alertAbove: stockMeta?.alertAbove,
+    alertBelow: stockMeta?.alertBelow,
+  };
 }
 
 /** 详情页：头部复用行情缓存；图表按需拉取 */
@@ -53,7 +120,7 @@ export class StockDetailPanel implements Disposable {
     context: DetailContext,
     private quoteScheduler: QuoteScheduler
   ) {
-    this.chartPeriod = defaultChartPeriod(context.code);
+    this.chartPeriod = defaultChartPeriod(context.code, context.secid);
     this.panel = panel;
     this.context = context;
     this.panel.onDidDispose(() => this.dispose(), null, []);
@@ -61,6 +128,7 @@ export class StockDetailPanel implements Disposable {
       if (e.webviewPanel.visible) {
         void this.quoteScheduler.refresh();
         this.postQuoteUpdate();
+        this.postChartRedraw();
         if (this.chartPeriod === 'intraday') {
           void this.loadChart();
         }
@@ -103,20 +171,15 @@ export class StockDetailPanel implements Disposable {
       const panel = StockDetailPanel.current;
       const sameStock = panel.context.code === normalized;
       panel.panel.reveal(ViewColumn.One);
-      panel.context = {
-        code: normalized,
-        name,
-        note: stockMeta?.note,
-        alertAbove: stockMeta?.alertAbove,
-        alertBelow: stockMeta?.alertBelow,
-      };
+      panel.context = buildDetailContext(normalized, name, stockMeta);
       panel.panel.title = name;
       void quoteScheduler.refresh();
       if (sameStock) {
+        panel.context = buildDetailContext(normalized, name, stockMeta);
         panel.postQuoteUpdate();
         return;
       }
-      panel.chartPeriod = defaultChartPeriod(normalized);
+      panel.chartPeriod = defaultChartPeriod(normalized, stockMeta?.secid);
       panel.loadShell();
       return;
     }
@@ -130,13 +193,7 @@ export class StockDetailPanel implements Disposable {
 
     StockDetailPanel.current = new StockDetailPanel(
       webviewPanel,
-      {
-        code: normalized,
-        name,
-        note: stockMeta?.note,
-        alertAbove: stockMeta?.alertAbove,
-        alertBelow: stockMeta?.alertBelow,
-      },
+      buildDetailContext(normalized, name, stockMeta),
       quoteScheduler
     );
   }
@@ -172,9 +229,21 @@ export class StockDetailPanel implements Disposable {
     });
   }
 
+  /** 面板重新可见时通知 webview 重绘 canvas，避免失焦后文字叠影 */
+  private postChartRedraw(): void {
+    if (!this.shellLoaded) {
+      return;
+    }
+    void this.panel.webview.postMessage({ type: 'chartRedraw' });
+  }
+
   private syncIntradayTimer(visible: boolean): void {
     this.stopIntradayTimer();
-    if (!visible || this.chartPeriod !== 'intraday' || !supportsIntraday(this.context.code)) {
+    if (
+      !visible ||
+      this.chartPeriod !== 'intraday' ||
+      !supportsIntraday(this.context.code, this.context.secid)
+    ) {
       return;
     }
     this.intradayTimer = setInterval(() => {
@@ -203,7 +272,7 @@ export class StockDetailPanel implements Disposable {
     const requestId = ++this.chartRequestId;
     const period: ChartPeriod = 'intraday';
 
-    if (!supportsIntraday(this.context.code)) {
+    if (!supportsIntraday(this.context.code, this.context.secid)) {
       void this.panel.webview.postMessage({
         type: 'chartStatus',
         period,
@@ -216,7 +285,7 @@ export class StockDetailPanel implements Disposable {
     void this.panel.webview.postMessage({ type: 'chartStatus', period, status: 'loading' });
 
     try {
-      const data = await fetchIntraday(this.context.code);
+      const data = await fetchIntraday(this.context.code, this.context.secid);
       if (requestId !== this.chartRequestId) {
         return;
       }
@@ -254,7 +323,7 @@ export class StockDetailPanel implements Disposable {
   private async loadKline(period: KlinePeriod): Promise<void> {
     const requestId = ++this.chartRequestId;
 
-    if (!supportsKline(this.context.code)) {
+    if (!supportsKline(this.context.code, this.context.secid)) {
       void this.panel.webview.postMessage({
         type: 'chartStatus',
         period,
@@ -267,7 +336,7 @@ export class StockDetailPanel implements Disposable {
     void this.panel.webview.postMessage({ type: 'chartStatus', period, status: 'loading' });
 
     try {
-      const bars = await fetchKline(this.context.code, period);
+      const bars = await fetchKline(this.context.code, period, 120, this.context.secid);
       if (requestId !== this.chartRequestId) {
         return;
       }
@@ -353,10 +422,10 @@ function buildShellHtml(ctx: DetailContext, activePeriod: ChartPeriod): string {
   const displayName = formatStockLabel(ctx.name, ctx.code);
   const marketLabel = getMarketLabel(ctx.code);
   const hasBrowser = !!getStockDetailUrl(ctx.code);
-  const hasIntraday = supportsIntraday(ctx.code);
-  const hasKline = supportsKline(ctx.code);
+  const hasIntraday = supportsIntraday(ctx.code, ctx.secid);
+  const hasKline = supportsKline(ctx.code, ctx.secid);
   const hasChart = hasIntraday || hasKline;
-  const period = activePeriod === 'intraday' && !hasIntraday ? 'daily' : activePeriod;
+  const period = normalizeActivePeriod(activePeriod, hasIntraday, hasKline);
 
   const tab = (p: ChartPeriod, label: string) =>
     `<button class="tab${period === p ? ' active' : ''}" data-period="${p}">${label}</button>`;
@@ -393,7 +462,7 @@ function buildShellHtml(ctx: DetailContext, activePeriod: ChartPeriod): string {
     canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
     .chart-tooltip { position: absolute; pointer-events: none; z-index: 10; padding: 8px 10px; font-size: 11px; line-height: 1.55; border-radius: 4px; background: var(--vscode-editorHoverWidget-background, #252526); border: 1px solid var(--vscode-editorHoverWidget-border, rgba(128,128,128,0.35)); color: var(--vscode-editorHoverWidget-foreground, #ccc); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
     .chart-tooltip.hidden { display: none; }
-    .tip-ma5 { color: #e6c84b; } .tip-ma10 { color: #b87aff; } .tip-ma20 { color: #5eb8ff; }
+    .tip-ma5 { color: #f0c74a; } .tip-ma10 { color: #f472b6; } .tip-ma20 { color: #22d3ee; }
     .tip-auction { color: #ff9f43; }
     .chart-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--vscode-descriptionForeground); font-size: 0.9em; pointer-events: none; }
     .chart-status.hidden { display: none; }
@@ -449,7 +518,7 @@ function getChartScript(activePeriod: ChartPeriod): string {
     let fallColor = '#73c991';
     let chartState = null;
     let priceDecimals = 2;
-    const MA_COLORS = { ma5: '#e6c84b', ma10: '#b87aff', ma20: '#5eb8ff' };
+    const MA_COLORS = { ma5: '#f0c74a', ma10: '#f472b6', ma20: '#22d3ee' };
     const AUCTION_COLOR = '#ff9f43';
     const PRICE_COLOR = '#5eb8ff';
     const AVG_COLOR = '#e6c84b';
@@ -481,13 +550,23 @@ function getChartScript(activePeriod: ChartPeriod): string {
       if (msg.type === 'chartKline') updateKline(msg);
       if (msg.type === 'chartIntraday') updateIntraday(msg);
       if (msg.type === 'chartStatus') updateChartStatus(msg);
+      if (msg.type === 'chartRedraw') redrawChart(null);
     });
 
-    window.addEventListener('resize', () => {
-      if (chartMode === 'kline' && currentBars.length) drawKlineChart(currentBars, riseColor, fallColor);
-      if (chartMode === 'intraday' && currentIntraday) drawIntradayChart(currentIntraday, riseColor, fallColor);
+    function onChartLayoutChange() {
       hideChartTooltip();
+      redrawChart(null);
+    }
+
+    window.addEventListener('resize', onChartLayoutChange);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        requestAnimationFrame(onChartLayoutChange);
+      }
     });
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => requestAnimationFrame(onChartLayoutChange)).observe(chartWrap);
+    }
 
     function updateQuote(p) {
       if (p.riseColor) riseColor = p.riseColor;
@@ -592,6 +671,16 @@ function getChartScript(activePeriod: ChartPeriod): string {
       return (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
     }
 
+    function fmtSigned(n) {
+      if (n == null || !Number.isFinite(n)) return '--';
+      return (n >= 0 ? '+' : '') + n.toFixed(priceDecimals);
+    }
+
+    function fmtSignedPct(n) {
+      if (n == null || !Number.isFinite(n)) return '--';
+      return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+    }
+
     function pickIntradayTimeLabels(points) {
       const targets = ['09:15', '09:30', '11:30', '13:00', '15:00'];
       const picked = [];
@@ -617,9 +706,63 @@ function getChartScript(activePeriod: ChartPeriod): string {
       return pad.left + idx * slot + slot / 2;
     }
 
+    const VOL_RATIO = 0.24;
+    const VOL_GAP = 4;
+
+    function chartLayout(pad, w, h) {
+      const plotH = h - pad.top - pad.bottom;
+      const volH = Math.max(36, Math.floor(plotH * VOL_RATIO));
+      const priceH = plotH - volH - VOL_GAP;
+      return {
+        cw: w - pad.left - pad.right,
+        priceH,
+        volH,
+        priceBottom: pad.top + priceH,
+        volTop: pad.top + priceH + VOL_GAP,
+        volBottom: h - pad.bottom,
+      };
+    }
+
+    function fmtVolume(v) {
+      if (v == null || !Number.isFinite(v) || v <= 0) return '--';
+      if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+      if (v >= 1e4) return (v / 1e4).toFixed(1) + '万';
+      return String(Math.round(v));
+    }
+
+    function drawVolumeDivider(ctx, pad, layout, w) {
+      const y = layout.priceBottom + VOL_GAP / 2;
+      ctx.strokeStyle = 'rgba(128,128,128,0.2)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(w - pad.right, y);
+      ctx.stroke();
+    }
+
+    function drawVolumeBars(ctx, items, pad, slot, layout, mode) {
+      const maxVol = Math.max(...items.map((it) => it.volume), 1);
+      const { volH, volBottom } = layout;
+      const barW = mode === 'kline' ? Math.max(2, slot * 0.55) : Math.max(1, slot * 0.7);
+      for (let i = 0; i < items.length; i++) {
+        const vol = items[i].volume;
+        if (vol <= 0) continue;
+        const bh = (vol / maxVol) * volH;
+        const cx = mode === 'kline' ? pad.left + i * slot + slot / 2 : pad.left + i * slot;
+        const x = cx - barW / 2;
+        ctx.fillStyle = items[i].color;
+        ctx.fillRect(x, volBottom - bh, barW, Math.max(1, bh));
+      }
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = 'rgba(128,128,128,0.55)';
+      ctx.textAlign = 'left';
+      ctx.fillText(fmtVolume(maxVol), 4, layout.volTop + 10);
+    }
+
     function priceFromY(state, py) {
-      const { pad, ch, yMin, yRange } = state;
-      const t = (py - pad.top) / ch;
+      const { pad, priceH, priceBottom, yMin, yRange } = state;
+      const clamped = Math.min(Math.max(py, pad.top), priceBottom);
+      const t = (clamped - pad.top) / priceH;
       return yMin + yRange * (1 - t);
     }
 
@@ -652,7 +795,7 @@ function getChartScript(activePeriod: ChartPeriod): string {
         const preClose = chartState.preClose || 0;
         let html = '<div><strong>' + esc(p.time) + '</strong></div>';
         html += '<div>价 ' + fmtPrice(p.price) + ' (' + fmtPctFromPreClose(p.price, preClose) + ')　均 ' + fmtPrice(p.avgPrice) + '</div>';
-        if (p.volume > 0) html += '<div>量 ' + p.volume + '</div>';
+        if (p.volume > 0) html += '<div>量 ' + fmtVolume(p.volume) + '</div>';
         if (p.isAuction) html += '<div class="tip-auction">盘前竞价</div>';
         chartTooltip.innerHTML = html;
       } else {
@@ -664,9 +807,11 @@ function getChartScript(activePeriod: ChartPeriod): string {
           '<div><strong>' + esc(b.date) + '</strong></div>' +
           '<div>开 ' + fmtPrice(b.open) + '　高 ' + fmtPrice(b.high) + '</div>' +
           '<div>低 ' + fmtPrice(b.low) + '　收 ' + fmtPrice(b.close) + '</div>' +
+          '<div>涨跌 ' + fmtSigned(b.change) + ' (' + fmtSignedPct(b.percent) + ')</div>' +
           '<div class="tip-ma5">' + pl + '5: ' + fmtPrice(ma5[idx]) + '</div>' +
           '<div class="tip-ma10">' + pl + '10: ' + fmtPrice(ma10[idx]) + '</div>' +
-          '<div class="tip-ma20">' + pl + '20: ' + fmtPrice(ma20[idx]) + '</div>';
+          '<div class="tip-ma20">' + pl + '20: ' + fmtPrice(ma20[idx]) + '</div>' +
+          (b.volume > 0 ? '<div>量 ' + fmtVolume(b.volume) + '</div>' : '');
       }
       chartTooltip.classList.remove('hidden');
       const tipW = chartTooltip.offsetWidth || 160;
@@ -690,7 +835,7 @@ function getChartScript(activePeriod: ChartPeriod): string {
 
     function drawCrosshair(ctx, crosshair, state, rise, fall) {
       const { x, y, price } = crosshair;
-      const { pad, w, h, preClose } = state;
+      const { pad, w, h, preClose, priceBottom } = state;
       ctx.save();
       ctx.strokeStyle = 'rgba(128,128,128,0.65)';
       ctx.lineWidth = 1;
@@ -699,18 +844,25 @@ function getChartScript(activePeriod: ChartPeriod): string {
       ctx.moveTo(x, pad.top);
       ctx.lineTo(x, h - pad.bottom);
       ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(w - pad.right, y);
-      ctx.stroke();
+      if (y <= priceBottom) {
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(w - pad.right, y);
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
+
+      if (y > priceBottom) {
+        ctx.restore();
+        return;
+      }
 
       const priceStr = fmtPrice(price);
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'left';
       const labelW = Math.max(44, ctx.measureText(priceStr).width + 10);
       const labelH = 16;
-      const labelY = Math.min(Math.max(y - labelH / 2, pad.top), h - pad.bottom - labelH);
+      const labelY = Math.min(Math.max(y - labelH / 2, pad.top), priceBottom - labelH);
       ctx.fillStyle = 'var(--vscode-editorHoverWidget-background, #252526)';
       ctx.strokeStyle = 'rgba(128,128,128,0.45)';
       ctx.fillRect(2, labelY, labelW, labelH);
@@ -726,12 +878,17 @@ function getChartScript(activePeriod: ChartPeriod): string {
       }
       ctx.restore();
     }
-    function clearChart() { const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); }
+    function clearChart() {
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
 
     function setupCanvas() {
       const wrap = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = wrap.clientWidth, h = wrap.clientHeight;
+      if (w < 1 || h < 1) return null;
       canvas.width = Math.floor(w * dpr);
       canvas.height = Math.floor(h * dpr);
       canvas.style.width = w + 'px';
@@ -743,13 +900,15 @@ function getChartScript(activePeriod: ChartPeriod): string {
     }
 
     function drawIntradayChart(data, rise, fall, crosshair) {
-      const { ctx, w, h } = setupCanvas();
+      const setup = setupCanvas();
+      if (!setup) return;
+      const { ctx, w, h } = setup;
       const points = data.points;
       if (!points.length) { chartState = null; return; }
 
       const pad = { top: 14, right: 48, bottom: 28, left: 52 };
-      const cw = w - pad.left - pad.right;
-      const ch = h - pad.top - pad.bottom;
+      const layout = chartLayout(pad, w, h);
+      const { cw, priceH, priceBottom } = layout;
       const preClose = data.preClose;
 
       let minP = preClose, maxP = preClose;
@@ -760,10 +919,10 @@ function getChartScript(activePeriod: ChartPeriod): string {
       const padY = (maxP - minP) * 0.08 || preClose * 0.02 || 1;
       minP -= padY; maxP += padY;
       const range = maxP - minP || 1;
-      const y = (pr) => pad.top + ch - ((pr - minP) / range) * ch;
+      const y = (pr) => pad.top + priceH - ((pr - minP) / range) * priceH;
       const slot = cw / Math.max(points.length - 1, 1);
 
-      chartState = { mode: 'intraday', points, pad, slot, w, h, len: points.length, yMin: minP, yRange: range, ch, preClose };
+      chartState = { mode: 'intraday', points, pad, slot, w, h, len: points.length, yMin: minP, yRange: range, priceH, priceBottom, preClose };
 
       ctx.font = '11px sans-serif';
       for (let i = 0; i <= 4; i++) {
@@ -798,7 +957,7 @@ function getChartScript(activePeriod: ChartPeriod): string {
       const auctionEnd = points.findIndex((p) => !p.isAuction);
       if (auctionEnd > 0) {
         ctx.fillStyle = 'rgba(255, 159, 67, 0.06)';
-        ctx.fillRect(pad.left, pad.top, auctionEnd * slot, ch);
+        ctx.fillRect(pad.left, pad.top, auctionEnd * slot, priceH);
       }
 
       // 均价线
@@ -836,17 +995,26 @@ function getChartScript(activePeriod: ChartPeriod): string {
         ctx.fillText(p.time, Math.max(pad.left, tx), h - 8);
       }
 
+      drawVolumeDivider(ctx, pad, layout, w);
+      const volItems = points.map((p, i) => {
+        const prev = i > 0 ? points[i - 1].price : preClose;
+        return { volume: p.volume, color: p.price >= prev ? rise : fall };
+      });
+      drawVolumeBars(ctx, volItems, pad, slot, layout, 'intraday');
+
       if (crosshair) drawCrosshair(ctx, crosshair, chartState, rise, fall);
     }
 
     function drawKlineChart(bars, rise, fall, crosshair) {
-      const { ctx, w, h } = setupCanvas();
+      const setup = setupCanvas();
+      if (!setup) return;
+      const { ctx, w, h } = setup;
       if (!bars.length) { chartState = null; return; }
 
       const ma5 = computeMA(bars, 5), ma10 = computeMA(bars, 10), ma20 = computeMA(bars, 20);
       const pad = { top: 12, right: 12, bottom: 28, left: 52 };
-      const cw = w - pad.left - pad.right;
-      const ch = h - pad.top - pad.bottom;
+      const layout = chartLayout(pad, w, h);
+      const { cw, priceH, priceBottom } = layout;
 
       let minL = Infinity, maxH = -Infinity;
       for (const b of bars) { minL = Math.min(minL, b.low); maxH = Math.max(maxH, b.high); }
@@ -856,11 +1024,11 @@ function getChartScript(activePeriod: ChartPeriod): string {
       const padY = (maxH - minL) * 0.06 || 1;
       minL -= padY; maxH += padY;
       const range = maxH - minL || 1;
-      const y = (p) => pad.top + ch - ((p - minL) / range) * ch;
+      const y = (p) => pad.top + priceH - ((p - minL) / range) * priceH;
       const slot = cw / bars.length;
       const bodyW = Math.max(2, slot * 0.55);
 
-      chartState = { mode: 'kline', bars, pad, slot, w, h, len: bars.length, ma5, ma10, ma20, yMin: minL, yRange: range, ch };
+      chartState = { mode: 'kline', bars, pad, slot, w, h, len: bars.length, ma5, ma10, ma20, yMin: minL, yRange: range, priceH, priceBottom };
 
       ctx.font = '11px sans-serif';
       for (let i = 0; i <= 4; i++) {
@@ -884,9 +1052,9 @@ function getChartScript(activePeriod: ChartPeriod): string {
         ctx.fillRect(x - bodyW / 2, Math.min(oy, cy), bodyW, Math.max(1, Math.abs(cy - oy)));
       }
 
-      drawMALine(ctx, ma5, MA_COLORS.ma5, pad, slot, y, bars.length);
-      drawMALine(ctx, ma10, MA_COLORS.ma10, pad, slot, y, bars.length);
-      drawMALine(ctx, ma20, MA_COLORS.ma20, pad, slot, y, bars.length);
+      drawMALine(ctx, ma5, MA_COLORS.ma5, pad, slot, y, bars.length, 1.2);
+      drawMALine(ctx, ma10, MA_COLORS.ma10, pad, slot, y, bars.length, 1.4);
+      drawMALine(ctx, ma20, MA_COLORS.ma20, pad, slot, y, bars.length, 1.6);
 
       const idxs = [0, Math.floor(bars.length / 2), bars.length - 1];
       ctx.fillStyle = 'rgba(128,128,128,0.75)'; ctx.font = '10px sans-serif';
@@ -895,11 +1063,18 @@ function getChartScript(activePeriod: ChartPeriod): string {
         ctx.fillText(b.date.slice(5), pad.left + i * slot + slot / 2 - 14, h - 8);
       }
 
+      drawVolumeDivider(ctx, pad, layout, w);
+      const volItems = bars.map((b) => ({
+        volume: b.volume,
+        color: b.close >= b.open ? rise : fall,
+      }));
+      drawVolumeBars(ctx, volItems, pad, slot, layout, 'kline');
+
       if (crosshair) drawCrosshair(ctx, crosshair, chartState, rise, fall);
     }
 
-    function drawMALine(ctx, ma, color, pad, slot, y, len) {
-      ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.beginPath();
+    function drawMALine(ctx, ma, color, pad, slot, y, len, lineWidth) {
+      ctx.strokeStyle = color; ctx.lineWidth = lineWidth || 1.2; ctx.beginPath();
       let started = false;
       for (let i = 0; i < len; i++) {
         if (ma[i] == null) continue;

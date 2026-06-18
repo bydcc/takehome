@@ -1,6 +1,8 @@
 export interface StockItem {
   code: string;
   name: string;
+  /** 东方财富 QuoteID（如 100.N225），K 线/分时优先使用 */
+  secid?: string;
   note?: string;
   /** 价格高于此值时提醒（复用行情刷新检测，无额外请求） */
   alertAbove?: number;
@@ -42,6 +44,8 @@ export interface SearchResult {
   code: string;
   name: string;
   market: string;
+  /** 东方财富 QuoteID，搜索添加时写入 */
+  secid?: string;
 }
 
 export interface MarketIndexSnapshot {

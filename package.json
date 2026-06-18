@@ -2,7 +2,7 @@
   "name": "take-home",
   "displayName": "赚钱离场",
   "description": "精简版股票行情插件：搜索订阅股票、查看实时价格、支持分组",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "bydcc",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -322,6 +322,21 @@
           "default": 30000,
           "minimum": 10000,
           "description": "（已弃用）MA 改为悬停时按需拉取，此设置不再生效"
+        },
+        "take-home.detail.defaultChartPeriod": {
+          "type": "string",
+          "enum": [
+            "intraday",
+            "daily",
+            "weekly"
+          ],
+          "enumDescriptions": [
+            "分时图",
+            "日 K 线",
+            "周 K 线"
+          ],
+          "default": "intraday",
+          "description": "打开股票详情页时默认显示的图表类型；若当前品种不支持所选类型，将自动降级为可用类型"
         }
       }
     }

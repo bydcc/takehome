@@ -1,4 +1,9 @@
 import { httpGet, httpGetJson } from './httpClient';
+import {
+  resolveEastMoneySecId,
+  supportsEastMoneyKline,
+  toEastMoneySecId,
+} from './eastMoneySecId';
 
 export interface KlineBar {
   date: string;
@@ -8,6 +13,8 @@ export interface KlineBar {
   low: number;
   volume: number;
   amount: number;
+  change?: number;
+  percent?: number;
 }
 
 export type KlinePeriod = 'daily' | 'weekly';
@@ -28,29 +35,17 @@ const TENCENT_PERIOD: Record<KlinePeriod, string> = {
 /** 当日 K 线内存缓存，MA 与详情页共用，避免重复请求 */
 const klineSessionCache = new Map<string, { date: string; period: KlinePeriod; bars: KlineBar[] }>();
 
-/** 是否支持 K 线（A 股 / 港股 / 美股） */
-export function supportsKline(code: string): boolean {
-  const c = code.toLowerCase();
-  return /^(sh|sz|bj)\d+/.test(c) || /^hk\d+/.test(c) || c.startsWith('usr_');
+/** 是否支持 K 线（A 股 / 港股 / 美股 / 带 secid 或新浪映射的环球品种） */
+export function supportsKline(code: string, secid?: string): boolean {
+  return supportsEastMoneyKline(code, secid);
 }
 
 /** 转为东方财富 secid */
-export function toEastMoneySecId(code: string): string | undefined {
-  const c = code.toLowerCase();
-  if (/^sh\d+/.test(c)) {
-    return `1.${c.slice(2)}`;
-  }
-  if (/^(sz|bj)\d+/.test(c)) {
-    return `0.${c.slice(2)}`;
-  }
-  if (/^hk\d+/.test(c)) {
-    return `116.${c.slice(2)}`;
-  }
-  if (c.startsWith('usr_')) {
-    return `105.${c.slice(4).toUpperCase()}`;
-  }
-  return undefined;
+export function toEastMoneySecIdFromCode(code: string): string | undefined {
+  return toEastMoneySecId(code);
 }
+
+export { resolveEastMoneySecId, toEastMoneySecId };
 
 export function toTencentKlineCode(code: string): string | undefined {
   const c = code.toLowerCase();
@@ -72,20 +67,34 @@ function getBeijingDateString(): string {
   }).format(new Date());
 }
 
-function cacheKey(code: string, period: KlinePeriod): string {
-  return `${code.toLowerCase()}:${period}`;
+function cacheKey(code: string, period: KlinePeriod, secid?: string): string {
+  const id = resolveEastMoneySecId(code, secid) ?? code.toLowerCase();
+  return `${id}:${period}`;
 }
 
-function readSessionCache(code: string, period: KlinePeriod, limit: number): KlineBar[] | undefined {
-  const hit = klineSessionCache.get(cacheKey(code, period));
+function readSessionCache(
+  code: string,
+  period: KlinePeriod,
+  limit: number,
+  secid?: string
+): KlineBar[] | undefined {
+  const hit = klineSessionCache.get(cacheKey(code, period, secid));
   if (!hit || hit.date !== getBeijingDateString()) {
+    return undefined;
+  }
+  if (hit.bars.length < limit) {
     return undefined;
   }
   return hit.bars.slice(-limit);
 }
 
-function writeSessionCache(code: string, period: KlinePeriod, bars: KlineBar[]): void {
-  klineSessionCache.set(cacheKey(code, period), {
+function writeSessionCache(
+  code: string,
+  period: KlinePeriod,
+  bars: KlineBar[],
+  secid?: string
+): void {
+  klineSessionCache.set(cacheKey(code, period, secid), {
     date: getBeijingDateString(),
     period,
     bars,
@@ -102,44 +111,46 @@ const EASTMONEY_HEADERS: Record<string, string> = {
 export async function fetchKline(
   code: string,
   period: KlinePeriod,
-  limit = 120
+  limit = 120,
+  secid?: string
 ): Promise<KlineBar[]> {
   const normalized = code.toLowerCase();
-  if (!supportsKline(normalized)) {
+  if (!supportsKline(normalized, secid)) {
     return [];
   }
 
-  const cached = readSessionCache(normalized, period, limit);
+  const cached = readSessionCache(normalized, period, limit, secid);
   if (cached && cached.length > 0) {
     return cached;
   }
 
   let bars: KlineBar[] = [];
   let lastError: unknown;
+  const sourceLimit = limit + 1;
 
   // A 股优先腾讯 K 线（扩展宿主内更稳定），其余品种走东方财富
   if (/^(sh|sz|bj)\d+/.test(normalized)) {
     try {
-      bars = await fetchTencentKline(normalized, period, limit);
+      bars = await fetchTencentKline(normalized, period, sourceLimit);
     } catch (err) {
       lastError = err;
     }
     if (bars.length === 0) {
       try {
-        bars = await fetchEastMoneyKline(normalized, period, limit);
+        bars = await fetchEastMoneyKline(normalized, period, sourceLimit, secid);
       } catch (err) {
         lastError = err;
       }
     }
   } else {
     try {
-      bars = await fetchEastMoneyKline(normalized, period, limit);
+      bars = await fetchEastMoneyKline(normalized, period, sourceLimit, secid);
     } catch (err) {
       lastError = err;
     }
     if (bars.length === 0) {
       try {
-        bars = await fetchTencentKline(normalized, period, limit);
+        bars = await fetchTencentKline(normalized, period, sourceLimit);
       } catch (err) {
         lastError = err;
       }
@@ -151,24 +162,41 @@ export async function fetchKline(
   }
 
   if (bars.length > 0) {
-    writeSessionCache(normalized, period, bars);
+    bars = withKlineChange(bars).slice(-limit);
+    writeSessionCache(normalized, period, bars, secid);
   }
 
   return bars;
 }
 
+function withKlineChange(bars: KlineBar[]): KlineBar[] {
+  return bars.map((bar, index) => {
+    const prevClose = index > 0 ? bars[index - 1].close : 0;
+    if (!Number.isFinite(prevClose) || prevClose <= 0) {
+      return bar;
+    }
+    const change = bar.close - prevClose;
+    return {
+      ...bar,
+      change,
+      percent: (change / prevClose) * 100,
+    };
+  });
+}
+
 async function fetchEastMoneyKline(
   code: string,
   period: KlinePeriod,
-  limit: number
+  limit: number,
+  secid?: string
 ): Promise<KlineBar[]> {
-  const secid = toEastMoneySecId(code);
-  if (!secid) {
+  const resolvedSecid = resolveEastMoneySecId(code, secid);
+  if (!resolvedSecid) {
     return [];
   }
 
   const target = new URL(EASTMONEY_KLINE_URL);
-  target.searchParams.set('secid', secid);
+  target.searchParams.set('secid', resolvedSecid);
   target.searchParams.set('ut', 'fa5fd1943c7b386f172d6893db079106');
   target.searchParams.set('klt', String(KLT[period]));
   target.searchParams.set('fqt', '1');
@@ -308,11 +336,11 @@ function computeMAAt(bars: KlineBar[], period: number): number | null {
 }
 
 /** 拉取最近 25 根日 K，本地计算 MA5/10/20 */
-export async function fetchLatestMA(code: string): Promise<MaValues | null> {
-  if (!supportsKline(code)) {
+export async function fetchLatestMA(code: string, secid?: string): Promise<MaValues | null> {
+  if (!supportsKline(code, secid)) {
     return null;
   }
-  const bars = await fetchKline(code, 'daily', 25);
+  const bars = await fetchKline(code, 'daily', 25, secid);
   if (bars.length < 5) {
     return null;
   }
