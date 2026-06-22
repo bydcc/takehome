@@ -1,5 +1,12 @@
 import { MarketOverview, SearchResult, StockQuote } from '../models/types';
+import { toEastMoneySecId } from './eastMoneySecId';
 import { httpGet } from './httpClient';
+import {
+  calcAShareLimitPrices,
+  detectLimitBoard,
+  enrichLimitBoardAmounts,
+  formatSealLots,
+} from './limitBoard';
 import { searchEastMoneyInstruments } from './eastMoneySearchApi';
 import {
   isSinaGlobalCode,
@@ -247,6 +254,8 @@ async function fetchAShareQuotes(codes: string[]): Promise<StockQuote[]> {
     }
   }
 
+  await enrichLimitBoardAmounts(quotes, httpGet, toEastMoneySecId);
+
   return quotes;
 }
 
@@ -305,28 +314,60 @@ async function fetchSinaQuotes(codes: string[]): Promise<StockQuote[]> {
   return quotes;
 }
 
+function parseSinaAShareQuote(code: string, params: string[]): StockQuote | null {
+  const name = params[0];
+  if (!name) {
+    return null;
+  }
+  const open = parseFloat(params[1]) || 0;
+  const yestclose = parseFloat(params[2]) || 0;
+  let price = parseFloat(params[3]) || 0;
+  const high = parseFloat(params[4]) || 0;
+  const low = parseFloat(params[5]) || 0;
+  const bid1Price = parseFloat(params[6]) || 0;
+  const bid1Lots = parseFloat(params[10]) || 0;
+  const ask1Price = parseFloat(params[19]) || 0;
+  const ask1Lots = parseFloat(params[20]) || 0;
+
+  if (price === 0) {
+    price = bid1Price || yestclose;
+  }
+
+  const change = price - yestclose;
+  const percent = yestclose ? (change / yestclose) * 100 : 0;
+  const amount = parseFloat(params[9]) || 0;
+  const limits = calcAShareLimitPrices(code, yestclose, name);
+  const rawPrice = parseFloat(params[3]) || 0;
+  const limitBoard = detectLimitBoard({
+    code,
+    name,
+    rawPrice,
+    limitUp: limits.up,
+    limitDown: limits.down,
+    bid1Price,
+    bid1Lots,
+    ask1Price,
+    ask1Lots,
+  });
+
+  return {
+    code,
+    name,
+    price,
+    yestclose,
+    open,
+    high,
+    low,
+    change,
+    percent,
+    amount,
+    limitBoard,
+  };
+}
+
 function parseSinaQuote(code: string, params: string[]): StockQuote | null {
   if (/^(sh|sz|bj)/.test(code)) {
-    const name = params[0];
-    if (!name) {
-      return null;
-    }
-    const open = parseFloat(params[1]) || 0;
-    const yestclose = parseFloat(params[2]) || 0;
-    let price = parseFloat(params[3]) || 0;
-    const high = parseFloat(params[4]) || 0;
-    const low = parseFloat(params[5]) || 0;
-
-    if (price === 0) {
-      const buy1 = parseFloat(params[6]) || 0;
-      price = buy1 || yestclose;
-    }
-
-    const change = price - yestclose;
-    const percent = yestclose ? (change / yestclose) * 100 : 0;
-    const amount = parseFloat(params[9]) || 0;
-
-    return { code, name, price, yestclose, open, high, low, change, percent, amount };
+    return parseSinaAShareQuote(code, params);
   }
 
   if (isUSCode(code)) {
@@ -441,6 +482,11 @@ async function fetchTencentAShareQuotes(codes: string[]): Promise<StockQuote[]> 
     const high = parseFloat(fields[33]) || 0;
     const low = parseFloat(fields[34]) || 0;
     const bid1 = parseFloat(fields[9]) || 0;
+    const bid1Lots = parseFloat(fields[10]) || 0;
+    const ask1 = parseFloat(fields[19]) || 0;
+    const ask1Lots = parseFloat(fields[20]) || 0;
+    const limitUp = parseFloat(fields[47]) || 0;
+    const limitDown = parseFloat(fields[48]) || 0;
     const price = resolveASharePrice(rawPrice, bid1, yestclose);
     if (price <= 0) {
       continue;
@@ -455,8 +501,31 @@ async function fetchTencentAShareQuotes(codes: string[]): Promise<StockQuote[]> 
         ? parseFloat(fields[32]) || (yestclose ? ((price - yestclose) / yestclose) * 100 : 0)
         : 0;
     const amount = (parseFloat(fields[37]) || 0) * 10000;
+    const limitBoard = detectLimitBoard({
+      code,
+      name,
+      rawPrice,
+      limitUp,
+      limitDown,
+      bid1Price: bid1,
+      bid1Lots,
+      ask1Price: ask1,
+      ask1Lots,
+    });
 
-    quotes.push({ code, name, price, yestclose, open, high, low, change, percent, amount });
+    quotes.push({
+      code,
+      name,
+      price,
+      yestclose,
+      open,
+      high,
+      low,
+      change,
+      percent,
+      amount,
+      limitBoard,
+    });
   }
 
   return quotes;
@@ -571,6 +640,22 @@ export function formatAmount(amount: number): string {
     return `${(amount / 10000).toFixed(2)}万`;
   }
   return amount.toFixed(0);
+}
+
+export function formatLimitBoardSummary(board: import('../models/types').LimitBoardInfo): string {
+  const tag = board.side === 'up' ? '涨停' : '跌停';
+  return `${tag}封${formatAmount(board.sealAmount)}`;
+}
+
+export function formatLimitBoardTooltip(board: import('../models/types').LimitBoardInfo): string {
+  const tag = board.side === 'up' ? '涨停' : '跌停';
+  const lines = [
+    `${tag}封单: ${formatSealLots(board.sealLots)} (${formatAmount(board.sealAmount)})`,
+  ];
+  if (board.boardAmount && board.boardAmount > 0) {
+    lines.push(`${tag}板上成交额: ${formatAmount(board.boardAmount)}`);
+  }
+  return lines.join('\n');
 }
 
 /** 格式化两市总成交额（元），输出如 2.40万亿、8650.32亿 */

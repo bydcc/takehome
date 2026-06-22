@@ -17,7 +17,10 @@ import {
   formatPriceWithPercent,
   formatStockLabel,
   getMarketLabel,
+  formatLimitBoardSummary,
+  formatLimitBoardTooltip,
 } from '../api/stockApi';
+
 import { SortOrder, StockGroup, StockItem, StockQuote, StockTreeContext } from '../models/types';
 import { MaCacheService } from '../service/maCacheService';
 import { QuoteScheduler } from '../service/quoteScheduler';
@@ -299,7 +302,7 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     const alertSuffix =
       stock.alertAbove !== undefined || stock.alertBelow !== undefined ? '  $(bell)' : '';
     if (quote && quote.price > 0) {
-      return `${quote.price}|${quote.change}|${quote.percent}|${formatPrice(quote.price, code)}|${formatPercent(quote.percent)}|${formatAmount(quote.amount)}${noteSuffix}${alertSuffix}`;
+      return `${quote.price}|${quote.change}|${quote.percent}|${formatPrice(quote.price, code)}|${formatPercent(quote.percent)}|${formatAmount(quote.amount)}|${quote.limitBoard?.sealAmount ?? ''}|${quote.limitBoard?.boardAmount ?? ''}${noteSuffix}${alertSuffix}`;
     }
     return `pending|${code}${noteSuffix}`;
   }
@@ -309,7 +312,7 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     const ma = this.maCache.get(code);
     const maKey = ma ? `${ma.ma5}|${ma.ma10}|${ma.ma20}` : 'none';
     const qKey = quote
-      ? `${quote.price}|${quote.percent}|${quote.amount}|${quote.yestclose}|${quote.open}|${quote.high}|${quote.low}`
+      ? `${quote.price}|${quote.percent}|${quote.amount}|${quote.yestclose}|${quote.open}|${quote.high}|${quote.low}|${quote.limitBoard?.sealAmount ?? ''}|${quote.limitBoard?.boardAmount ?? ''}`
       : 'none';
     return `${qKey}|${maKey}|${stock.note ?? ''}|${stock.alertAbove ?? ''}|${stock.alertBelow ?? ''}`;
   }
@@ -444,7 +447,8 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
       const priceStr = formatPrice(quote.price, normalized);
       const percentStr = formatPercent(quote.percent);
       const amountStr = formatAmount(quote.amount);
-      item.description = `${priceStr}  ${percentStr}  ${amountStr}${noteSuffix}${alertSuffix}`;
+      const boardSuffix = quote.limitBoard ? `  ${formatLimitBoardSummary(quote.limitBoard)}` : '';
+      item.description = `${priceStr}  ${percentStr}  ${amountStr}${boardSuffix}${noteSuffix}${alertSuffix}`;
       item.iconPath = getTrendIcon(this.extensionUri, quote.percent);
     } else {
       item.description = stock.note ? `${normalized}  ${stock.note}` : normalized;
@@ -479,8 +483,10 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     const alertLine = alertLines.length > 0 ? `\n${alertLines.join('\n')}` : '';
     const maLine = this.formatMaTooltip(normalized);
 
+    const boardLine = quote?.limitBoard ? `\n${formatLimitBoardTooltip(quote.limitBoard)}` : '';
+
     return quote
-      ? `${displayName} (${normalized})${marketLine}\n现价: ${formatPrice(quote.price, normalized)} (${formatPercent(quote.percent)})\n成交额: ${formatAmount(quote.amount)}\n昨收: ${formatPrice(quote.yestclose, normalized)}\n今开: ${formatPriceWithPercent(quote.open, quote.yestclose, normalized)}\n最高: ${formatPriceWithPercent(quote.high, quote.yestclose, normalized)}\n最低: ${formatPriceWithPercent(quote.low, quote.yestclose, normalized)}${maLine}${noteLine}${alertLine}`
+      ? `${displayName} (${normalized})${marketLine}\n现价: ${formatPrice(quote.price, normalized)} (${formatPercent(quote.percent)})\n成交额: ${formatAmount(quote.amount)}\n昨收: ${formatPrice(quote.yestclose, normalized)}\n今开: ${formatPriceWithPercent(quote.open, quote.yestclose, normalized)}\n最高: ${formatPriceWithPercent(quote.high, quote.yestclose, normalized)}\n最低: ${formatPriceWithPercent(quote.low, quote.yestclose, normalized)}${boardLine}${maLine}${noteLine}${alertLine}`
       : `${displayName} (${normalized})${marketLine}${maLine}${noteLine}${alertLine}`;
   }
 

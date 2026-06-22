@@ -27,6 +27,17 @@ export interface TakeHomeExportFile {
   groups: StockGroup[];
 }
 
+/** A 股涨跌停封板盘口（买一/卖一封单） */
+export interface LimitBoardInfo {
+  side: 'up' | 'down';
+  /** 封单手数 */
+  sealLots: number;
+  /** 封单金额（元） */
+  sealAmount: number;
+  /** 板上成交额（元），东财 f294 */
+  boardAmount?: number;
+}
+
 export interface StockQuote {
   code: string;
   name: string;
@@ -38,6 +49,7 @@ export interface StockQuote {
   percent: number;
   change: number;
   amount: number;
+  limitBoard?: LimitBoardInfo;
 }
 
 export interface SearchResult {

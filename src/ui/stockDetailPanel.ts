@@ -7,6 +7,7 @@ import {
   formatStockLabel,
   getMarketLabel,
 } from '../api/stockApi';
+import { formatSealLots } from '../api/limitBoard';
 import { fetchIntraday, supportsIntraday } from '../api/intradayApi';
 import {
   fetchKline,
@@ -393,6 +394,7 @@ function findStockMeta(storage: StockStorage, code: string, groupId?: string) {
 }
 
 function serializeQuote(ctx: DetailContext, quote: StockQuote | undefined) {
+  const board = quote?.limitBoard;
   return {
     code: ctx.code,
     name: ctx.name,
@@ -401,6 +403,17 @@ function serializeQuote(ctx: DetailContext, quote: StockQuote | undefined) {
     note: ctx.note,
     alertAbove: ctx.alertAbove,
     alertBelow: ctx.alertBelow,
+    limitBoard: board
+      ? {
+          label: board.side === 'up' ? '涨停' : '跌停',
+          sealLots: formatSealLots(board.sealLots),
+          sealAmount: formatAmount(board.sealAmount),
+          boardAmount:
+            board.boardAmount && board.boardAmount > 0
+              ? formatAmount(board.boardAmount)
+              : undefined,
+        }
+      : undefined,
     quote: quote
       ? {
           price: formatPrice(quote.price, ctx.code),
@@ -445,6 +458,8 @@ function buildShellHtml(ctx: DetailContext, activePeriod: ChartPeriod): string {
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px 16px; max-width: 640px; margin-bottom: 24px; }
     .stat-label { color: var(--vscode-descriptionForeground); font-size: 0.82em; }
     .stat-value { font-variant-numeric: tabular-nums; font-size: 0.95em; }
+    .stat-value.limit-up { color: #f14c4c; font-weight: 600; }
+    .stat-value.limit-down { color: #73c991; font-weight: 600; }
     .chart-section { margin-top: 8px; }
     .chart-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
     .chart-title { font-weight: 600; font-size: 0.95em; }
@@ -584,15 +599,28 @@ function getChartScript(activePeriod: ChartPeriod): string {
         priceEl.style.color = 'var(--vscode-foreground)';
       }
       const stats = [];
+      if (data.limitBoard) {
+        const cls = data.limitBoard.label === '涨停' ? 'limit-up' : 'limit-down';
+        stats.push(['板况', data.limitBoard.label + '封板', cls]);
+        stats.push(['封单量', data.limitBoard.sealLots, cls]);
+        stats.push(['封单金额', data.limitBoard.sealAmount, cls]);
+        if (data.limitBoard.boardAmount) {
+          stats.push(['板上成交额', data.limitBoard.boardAmount]);
+        }
+      }
       if (data.quote && data.quote.hasPrice) {
         stats.push(['涨跌额', data.quote.change], ['成交额', data.quote.amount], ['昨收', data.quote.yestclose]);
         stats.push(['今开', data.quote.open], ['最高', data.quote.high], ['最低', data.quote.low]);
-      } else stats.push(['现价', '等待行情刷新…']);
+      } else if (!data.limitBoard) stats.push(['现价', '等待行情刷新…']);
       if (data.note) stats.push(['备注', data.note]);
       if (data.alertAbove != null) stats.push(['提醒（上限）', '≥ ' + formatRaw(data.alertAbove, data.code)]);
       if (data.alertBelow != null) stats.push(['提醒（下限）', '≤ ' + formatRaw(data.alertBelow, data.code)]);
-      document.getElementById('stats').innerHTML = stats.map(([l,v]) =>
-        '<div><div class="stat-label">' + esc(l) + '</div><div class="stat-value">' + esc(v) + '</div></div>').join('');
+      document.getElementById('stats').innerHTML = stats.map((row) => {
+        const l = row[0];
+        const v = row[1];
+        const cls = row[2] ? ' ' + row[2] : '';
+        return '<div><div class="stat-label">' + esc(l) + '</div><div class="stat-value' + cls + '">' + esc(v) + '</div></div>';
+      }).join('');
     }
 
     function formatRaw(n, code) { return Number(n).toFixed(code.startsWith('usr_') ? 3 : 2); }
