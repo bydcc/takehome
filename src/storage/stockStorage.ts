@@ -1,8 +1,10 @@
 import { ExtensionContext } from 'vscode';
 import { getEmSecidForSinaCode } from '../api/eastMoneySecId';
-import { TakeHomeExportFile, StockConfig, StockGroup, StockItem } from '../models/types';
+import { SortOrder, TakeHomeExportFile, StockConfig, StockGroup, StockItem } from '../models/types';
 
 const STORAGE_KEY = 'take-home.stockConfig';
+const SORT_ORDER_KEY = 'take-home.sortOrder';
+const VALID_SORT_ORDERS: SortOrder[] = ['none', 'asc', 'desc'];
 
 const DEFAULT_GROUP: StockGroup = {
   id: 'default',
@@ -58,6 +60,21 @@ export class StockStorage {
 
   getGroups(): StockGroup[] {
     return this.config.groups;
+  }
+
+  getSortOrder(): SortOrder {
+    const saved = this.context.globalState.get<string>(SORT_ORDER_KEY);
+    if (saved && VALID_SORT_ORDERS.includes(saved as SortOrder)) {
+      return saved as SortOrder;
+    }
+    return 'none';
+  }
+
+  async setSortOrder(order: SortOrder): Promise<void> {
+    if (!VALID_SORT_ORDERS.includes(order)) {
+      return;
+    }
+    await this.context.globalState.update(SORT_ORDER_KEY, order);
   }
 
   getRootGroups(): StockGroup[] {

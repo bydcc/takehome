@@ -2,7 +2,7 @@
   "name": "take-home",
   "displayName": "赚钱离场",
   "description": "精简版股票行情插件：搜索订阅股票、查看实时价格、支持分组",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "bydcc",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -40,6 +40,10 @@
     }
   },
   "main": "./out/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -153,6 +157,11 @@
         "command": "take-home.setPriceAlert",
         "title": "设置价格提醒",
         "icon": "$(bell)"
+      },
+      {
+        "command": "take-home.compareStocks",
+        "title": "对比走势",
+        "icon": "$(git-compare)"
       }
     ],
     "menus": {
@@ -214,6 +223,11 @@
         },
         {
           "command": "take-home.viewStockDetail",
+          "when": "view == take-home.stocks && viewItem == stock",
+          "group": "0_view"
+        },
+        {
+          "command": "take-home.compareStocks",
           "when": "view == take-home.stocks && viewItem == stock",
           "group": "0_view"
         },
@@ -316,12 +330,6 @@
           "type": "boolean",
           "default": true,
           "description": "悬停自选股时在 tooltip 显示 MA5/MA10/MA20（仅悬停时按需拉取，不后台轮询）"
-        },
-        "take-home.tooltip.maFetchInterval": {
-          "type": "number",
-          "default": 30000,
-          "minimum": 10000,
-          "description": "（已弃用）MA 改为悬停时按需拉取，此设置不再生效"
         },
         "take-home.detail.defaultChartPeriod": {
           "type": "string",

@@ -36,19 +36,20 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
   readonly onDidChangeTreeData: Event<StockTreeItem | undefined> = this._onDidChangeTreeData.event;
 
   private quotes = new Map<string, StockQuote>();
-  private sortOrder: SortOrder = 'none';
+  private sortOrder: SortOrder;
   private disposables: Disposable[] = [];
   /** VS Code TreeView 的增量刷新依赖元素实例稳定，按 id 复用节点对象 */
   private itemCache = new Map<string, StockTreeItem>();
-  /** 记录每行展示指纹，仅变化时才刷新对应节点，避免悬浮 tooltip 被整树重绘打断 */
+  /** 记录每行展示指纹，仅在可见内容变化时安排一次合并刷新 */
   private displayFingerprints = new Map<string, string>();
   /** MA 更新后仅刷新 tooltip，不重绘行内价格 */
   private tooltipFingerprints = new Map<string, string>();
   /** 是否已收到过可展示的行情（用于首次加载后强制整树刷新） */
   private hasDisplayableQuotes = false;
-  /** 隐藏视图时暂停 TreeView 增量刷新，避免切回时行内容叠影 */
+  /** 仅在视图隐藏时暂停 TreeView 渲染；窗口失焦时仍持续刷新 */
   private viewVisible = true;
-  private pendingRefreshWhileHidden = false;
+  /** 合并同一轮行情中的多行变化，避免连续触发 TreeView 渲染 */
+  private displayRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private storage: StockStorage,
@@ -56,6 +57,7 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     quoteScheduler: QuoteScheduler,
     private maCache: MaCacheService
   ) {
+    this.sortOrder = storage.getSortOrder();
     this.disposables.push(
       quoteScheduler.registerCodeProvider(() => this.storage.getAllCodes()),
       quoteScheduler.subscribe((quotes) => {
@@ -65,6 +67,7 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
   }
 
   dispose(): void {
+    this.cancelDisplayRefresh();
     for (const d of this.disposables) {
       d.dispose();
     }
@@ -85,8 +88,12 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     }
   }
 
-  setSortOrder(order: SortOrder): void {
+  async setSortOrder(order: SortOrder): Promise<void> {
+    if (order === this.sortOrder) {
+      return;
+    }
     this.sortOrder = order;
+    await this.storage.setSortOrder(order);
     this.displayFingerprints.clear();
     this.tooltipFingerprints.clear();
     this.refresh();
@@ -94,14 +101,13 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
 
   /** 结构变化（增删分组/排序等）或需强制重绘时全量刷新 */
   refresh(): void {
+    this.cancelDisplayRefresh();
     this.displayFingerprints.clear();
     this.tooltipFingerprints.clear();
     this.itemCache.clear();
-    if (!this.viewVisible) {
-      this.pendingRefreshWhileHidden = true;
+    if (!this.canRender()) {
       return;
     }
-    this.pendingRefreshWhileHidden = false;
     this._onDidChangeTreeData.fire(undefined);
   }
 
@@ -180,8 +186,7 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
 
   private onQuotesUpdated(quotes: ReadonlyMap<string, StockQuote>): void {
     this.quotes = new Map(quotes);
-    if (!this.viewVisible) {
-      this.pendingRefreshWhileHidden = true;
+    if (!this.canRender()) {
       return;
     }
 
@@ -195,6 +200,7 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
     }
 
     const changedGroupIds = new Set<string>();
+    let displayChanged = false;
 
     for (const group of this.storage.getGroups()) {
       for (const stock of group.stocks) {
@@ -205,17 +211,22 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
           continue;
         }
         this.displayFingerprints.set(id, fp);
-        this.fireItem(id, { type: 'stock', groupId: group.id, stock });
+        displayChanged = true;
         changedGroupIds.add(group.id);
       }
     }
 
     for (const groupId of changedGroupIds) {
-      this.refreshGroupChain(groupId);
+      displayChanged = this.updateGroupChainFingerprints(groupId) || displayChanged;
+    }
+
+    if (displayChanged) {
+      this.scheduleDisplayRefresh();
     }
   }
 
-  private refreshGroupChain(groupId: string): void {
+  private updateGroupChainFingerprints(groupId: string): boolean {
+    let changed = false;
     let current: string | undefined = groupId;
     while (current) {
       const group = this.storage.findGroup(current);
@@ -226,15 +237,43 @@ export class StockTreeProvider implements TreeDataProvider<StockTreeItem>, Dispo
       const fp = this.groupRowFingerprint(group);
       if (this.displayFingerprints.get(id) !== fp) {
         this.displayFingerprints.set(id, fp);
-        this.fireItem(id, { type: 'group', groupId: current });
+        changed = true;
       }
       current = this.storage.getGroupParentId(current);
+    }
+    return changed;
+  }
+
+  private canRender(): boolean {
+    return this.viewVisible;
+  }
+
+  private scheduleDisplayRefresh(): void {
+    if (!this.canRender()) {
+      return;
+    }
+    if (this.displayRefreshTimer) {
+      return;
+    }
+    this.displayRefreshTimer = setTimeout(() => {
+      this.displayRefreshTimer = undefined;
+      if (!this.canRender()) {
+        return;
+      }
+      // 一次根刷新替代同一轮中的数十次单行刷新，规避 TreeView 文字叠影。
+      this._onDidChangeTreeData.fire(undefined);
+    }, 150);
+  }
+
+  private cancelDisplayRefresh(): void {
+    if (this.displayRefreshTimer) {
+      clearTimeout(this.displayRefreshTimer);
+      this.displayRefreshTimer = undefined;
     }
   }
 
   private fireItem(id: string, context: StockTreeContext): void {
-    if (!this.viewVisible) {
-      this.pendingRefreshWhileHidden = true;
+    if (!this.canRender()) {
       return;
     }
     const item = this.itemCache.get(id);

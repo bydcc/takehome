@@ -17,6 +17,7 @@ export function registerCommands(
   return [
     commands.registerCommand('take-home.refresh', async () => {
       await Promise.all([quoteScheduler.refresh(), marketOverviewScheduler.refresh()]);
+      treeProvider.refresh();
     }),
 
     commands.registerCommand('take-home.toggleCollapseAll', () => {
@@ -81,7 +82,7 @@ export function registerCommands(
         return;
       }
 
-      treeProvider.setSortOrder(picked.order);
+      await treeProvider.setSortOrder(picked.order);
     }),
 
     commands.registerCommand('take-home.removeStock', async (item: StockTreeItem) => {

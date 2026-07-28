@@ -1,5 +1,6 @@
 import { Disposable, ExtensionContext, window, workspace } from 'vscode';
 import { registerConfigCommands } from './commands/configCommands';
+import { registerCompareCommands } from './commands/compareCommands';
 import { registerDetailCommands } from './commands/detailCommands';
 import { registerMarketOverviewCommands } from './commands/marketOverviewCommands';
 import { registerStatusBarCommands } from './commands/statusBarCommands';
@@ -64,6 +65,7 @@ export function activate(context: ExtensionContext): void {
       treeDataProvider: treeProvider,
       showCollapseAll: true,
       dragAndDropController,
+      canSelectMany: true,
     });
     treeProvider.setViewVisible(treeView.visible);
 
@@ -83,15 +85,6 @@ export function activate(context: ExtensionContext): void {
           void quoteScheduler.refresh();
         }
       }),
-      window.onDidChangeWindowState((state) => {
-        if (!state.focused) {
-          return;
-        }
-        treeProvider.refresh();
-        if (quoteScheduler.collectCodes().length > 0) {
-          void quoteScheduler.refresh();
-        }
-      }),
       treeProvider,
       quoteScheduler,
       marketOverviewScheduler,
@@ -107,6 +100,7 @@ export function activate(context: ExtensionContext): void {
       ...registerStatusBarCommands(statusBarProvider, storage, quoteScheduler),
       ...registerMarketOverviewCommands(marketOverviewProvider, marketOverviewScheduler),
       ...registerDetailCommands(storage, quoteScheduler, priceAlertService),
+      ...registerCompareCommands(storage, quoteScheduler, treeView),
       workspace.onDidChangeConfiguration((e) => {
         if (
           e.affectsConfiguration('take-home.refreshInterval') ||
