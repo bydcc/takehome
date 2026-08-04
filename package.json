@@ -2,7 +2,7 @@
   "name": "take-home",
   "displayName": "赚钱离场",
   "description": "精简版股票行情插件：搜索订阅股票、查看实时价格、支持分组",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "bydcc",
   "license": "MIT",
   "icon": "resources/icon.png",
